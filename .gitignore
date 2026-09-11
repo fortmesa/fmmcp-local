@@ -1,0 +1,25 @@
+node_modules/
+dist/
+dist-ext/
+out/
+# Release artifacts. None of these are committed: they are built by
+# `yarn package:ext` / `package:mcpb` / `yarn pack` and published to the
+# releases page. Every one is reproducible from source, so committing a binary
+# would only add a second thing to keep in sync with the code.
+*.vsix
+*.tgz
+*.mcpb
+
+.yarn/*
+!.yarn/cache
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+*.tsbuildinfo
+.vscode-test/
+coverage/
+.env
+.env.local

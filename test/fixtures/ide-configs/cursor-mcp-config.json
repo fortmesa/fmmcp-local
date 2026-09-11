@@ -1,0 +1,14 @@
+{
+  "__testUnrelatedTopLevelSetting": "must-survive-untouched",
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspaces"]
+    },
+    "github": {
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "ghcr.io/github/github-mcp-server"],
+      "env": { "GITHUB_TOKEN": "${env:GITHUB_TOKEN}" }
+    }
+  }
+}

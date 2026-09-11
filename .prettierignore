@@ -1,0 +1,17 @@
+dist/
+node_modules/
+.yarn/
+.pnp.*
+yarn.lock
+coverage/
+*.tsbuildinfo
+openapi-snapshot.json
+src/supply-chain/
+# Intentionally-invalid negative-test fixtures (malformed JSON/TOML on purpose
+# to exercise projector parse-error handling) — not real source, must never be
+# reformatted or "fixed" by prettier.
+test/fixtures/ide-configs/*-malformed.*
+
+# Generated file — its formatting is owned by the generator script
+# (scripts/release/generate-third-party-notices.mjs), not prettier.
+THIRD-PARTY-NOTICES.md

@@ -1,0 +1,18 @@
+{
+  "client_id": "https://fortmesa.com/oauth/saferoom-client-metadata.json",
+  "client_name": "FortMesa Saferoom",
+  "client_uri": "https://fortmesa.com",
+  "logo_uri": "https://fortmesa.com/.well-known/logo-300.png",
+  "redirect_uris": [
+    "http://127.0.0.1/callback",
+    "http://localhost/callback",
+    "http://localhost/oauth/callback",
+    "http://127.0.0.1/oauth/callback",
+    "https://fortmesa.com/a/auth/saferoom/callback",
+    "https://fortmesa.com/b/auth/saferoom/callback"
+  ],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none",
+  "application_type": "native"
+}

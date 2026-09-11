@@ -1,0 +1,22 @@
+{
+  "__testUnrelatedTopLevelSetting": "must-survive-untouched",
+  "mcpServers": {
+    "atlassian-mcp-server": {
+      "args": ["-y", "mcp-remote", "https://mcp.atlassian.com/v1/mcp"],
+      "command": "npx",
+      "disabled": true
+    },
+    "chrome-devtools": {
+      "command": "/workspaces/fm-devcontainer/src/chrome-mcp/launch.sh"
+    },
+    "fortmesa-next": {
+      "args": ["--env", "next", "--gateway", "https://mcp-next.dev.fort.blue/mcp"],
+      "command": "/workspaces/fmmcp-local/launch-mcp.sh",
+      "disabled": true
+    },
+    "fortmesa-sandbox": {
+      "args": ["--env", "sandbox"],
+      "command": "/workspaces/fmmcp-local/launch-mcp.sh"
+    }
+  }
+}

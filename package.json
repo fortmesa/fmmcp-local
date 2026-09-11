@@ -1,0 +1,311 @@
+{
+  "name": "saferoom",
+  "version": "0.7.82",
+  "description": "Environment, scope, and credential management for the FortMesa MCP proxy — across Claude Code, VS Code, Cursor, Codex, and Antigravity.",
+  "displayName": "FortMesa Saferoom",
+  "publisher": "fortmesa",
+  "license": "Apache-2.0",
+  "icon": "media/logo.png",
+  "categories": [
+    "Other"
+  ],
+  "type": "module",
+  "main": "dist-ext/extension.cjs",
+  "bin": {
+    "fmmcp-local": "dist/local-mcp/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://bitbucket.org/fortmesa/fmmcp-local.git"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "engines": {
+    "node": ">=24.0.0",
+    "vscode": "^1.102.0"
+  },
+  "packageManager": "yarn@4.12.0+sha512.f45ab632439a67f8bc759bf32ead036a1f413287b9042726b7cc4818b7b49e14e9423ba49b18f9e06ea4941c1ad062385b1d8760a8d5091a1a31e5f6219afca8",
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "tsc",
+    "watch": "tsc -w",
+    "start": "node dist/local-mcp/cli.js",
+    "type-check": "tsc --noEmit",
+    "test:hot-reload": "node scripts/hot-reload-test.mjs",
+    "test:unit": "yarn clean && yarn build && yarn node --test \"dist/**/*.test.js\" \"test/**/*.test.mjs\" \"src/**/*.test.mjs\"",
+    "test": "yarn format:check && yarn lint && yarn test:unit",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --fix --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky",
+    "build:ext": "esbuild src/extension/extension.ts --bundle --platform=node --format=cjs --external:vscode --define:__FORTMESA_PROD_ONLY__=${FORTMESA_PROD_ONLY:-false} --outfile=dist-ext/extension.cjs --sourcemap",
+    "build:cli": "esbuild src/local-mcp/cli.ts --bundle --platform=node --format=cjs --define:__FORTMESA_PROD_ONLY__=${FORTMESA_PROD_ONLY:-false} --outfile=dist-ext/cli.cjs --sourcemap",
+    "package:ext": "yarn build && yarn build:ext && yarn build:cli && yarn build:mcpb && FORTMESA_PROD_ONLY=${FORTMESA_PROD_ONLY:-false} yarn verify:prod-strip && yarn notices:check && vsce package --no-dependencies --no-rewrite-relative-links -o \"FortMesa-Saferoom-$npm_package_version.vsix\"",
+    "verify:prod-strip": "node scripts/verify-prod-strip.mjs",
+    "package:ext:prod": "node scripts/package-prod.mjs",
+    "build:mcpb": "node scripts/build-mcpb.mjs",
+    "package:mcpb": "yarn build:cli && yarn build:mcpb",
+    "notices:generate": "node scripts/release/generate-third-party-notices.mjs",
+    "notices:check": "node scripts/release/check-third-party-notices.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "smol-toml": "^1.7.0",
+    "zod": "^4.4.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@types/node": "^24.0.0",
+    "@types/vscode": "~1.102.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.0.0",
+    "eslint-config-prettier": "^10.0.0",
+    "eslint-plugin-n": "^18.0.0",
+    "eslint-plugin-secure-coding": "^5.0.0",
+    "husky": "^9.0.0",
+    "lint-staged": "^17.0.0",
+    "ovsx": "^1.1.1",
+    "prettier": "^3.5.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.0.0"
+  },
+  "lint-staged": {
+    "*.{ts,mts,cts}": [
+      "prettier --write",
+      "eslint --fix --max-warnings 0 --no-warn-ignored"
+    ],
+    "*.{json,md,yaml,yml}": [
+      "prettier --write"
+    ]
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "fortmesa.login",
+        "title": "Sign In",
+        "category": "FortMesa",
+        "icon": "$(person-add)"
+      },
+      {
+        "command": "fortmesa.switchScopeExpert",
+        "title": "Choose Accessible Scopes…",
+        "category": "FortMesa",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "fortmesa.syncNow",
+        "title": "Sync Now",
+        "category": "FortMesa"
+      },
+      {
+        "command": "fortmesa.refresh",
+        "title": "Refresh",
+        "category": "FortMesa",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fortmesa.openApp",
+        "title": "FortMesa App",
+        "category": "FortMesa",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "fortmesa.openSaferoomSettings",
+        "title": "Settings",
+        "category": "FortMesa",
+        "icon": "$(settings-gear)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "fortmesa.switchScopeExpert",
+          "when": "view == fortmesa.scopes",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fortmesa.login",
+          "when": "view == fortmesa.identity",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "FortMesa Saferoom",
+      "properties": {
+        "fortmesa.activeEnv": {
+          "type": "string",
+          "default": "prod",
+          "scope": "machine",
+          "description": "The active FortMesa environment. Mirrors config.json's activeEnv; switching this setting re-targets the fortmesa MCP server for every IDE without touching their config files. Machine-scoped so Settings Sync cannot replicate it to another host and re-target a live proxy there -- credentials live in ~/.fmcode and do NOT sync, so a travelling environment produces a host whose selected environment and stored credentials disagree."
+        },
+        "fortmesa.environments": {
+          "type": "object",
+          "default": {
+            "prod": {
+              "gateway": "https://mcp.fortmesa.com/mcp"
+            },
+            "sandbox": {
+              "gateway": "http://localhost:3020/mcp"
+            },
+            "next": {
+              "gateway": "https://mcp-next.dev.fort.blue/mcp"
+            },
+            "latest": {
+              "gateway": "https://mcp-latest.dev.fort.blue/mcp"
+            }
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "gateway": {
+                "type": "string",
+                "description": "The MCP gateway URL for this environment."
+              }
+            },
+            "required": [
+              "gateway"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Per-environment gateway URL overrides (environment name -> { gateway }). Mirrors config.json's environments map."
+        },
+        "fortmesa.scopeLock.mode": {
+          "scope": "machine",
+          "type": "string",
+          "enum": [
+            "single",
+            "multi",
+            "unlocked"
+          ],
+          "enumDescriptions": [
+            "One scope is accessible.",
+            "Several named scopes are accessible.",
+            "Every scope this account is entitled to is accessible, including scopes granted later. No Saferoom control sets this any more — use Choose Accessible Scopes › Select all, or edit config.json."
+          ],
+          "default": "unlocked",
+          "description": "How the accessible-scope set is expressed. Mirrors config.json's scopeLock.mode."
+        },
+        "fortmesa.scopeLock.scopes": {
+          "scope": "machine",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "The accessible scope names. Exactly one entry when scopeLock.mode is \"single\"; one or more when \"multi\"; ignored when \"unlocked\". Mirrors config.json's scopeLock.scopes."
+        },
+        "fortmesa.ideSync.claude": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the fortmesa MCP server registration synced to Claude Code."
+        },
+        "fortmesa.ideSync.vscode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the fortmesa MCP server registration synced to VS Code (native vscode.lm API)."
+        },
+        "fortmesa.ideSync.cursor": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the fortmesa MCP server registration synced to Cursor."
+        },
+        "fortmesa.ideSync.codex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the fortmesa MCP server registration synced to Codex."
+        },
+        "fortmesa.ideSync.antigravity": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep the fortmesa MCP server registration synced to Antigravity."
+        },
+        "fortmesa.ideSync.copilot": {
+          "type": "boolean",
+          "default": true,
+          "description": "Project the fortmesa MCP server into GitHub Copilot (VS Code user-level mcp.json)."
+        },
+        "fortmesa.disabledTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "MCP tool names hidden from tools/list and rejected on direct call. Global (not per-environment). Mirrors config.json's disabledTools."
+        },
+        "fortmesa.documentsMode": {
+          "type": "string",
+          "enum": [
+            "local",
+            "network"
+          ],
+          "enumDescriptions": [
+            "Local-file mode: the extension handles documents on this machine -- agents read and write files by path in your workspace, and the extension uploads and downloads through your signed-in session.",
+            "Network mode: the gateway's URL-based tools are exposed instead -- agents receive signed upload and download links and move the bytes themselves. No workspace file access."
+          ],
+          "default": "local",
+          "description": "Which implementation of the grc_documents_* tools is exposed to agents. Mirrors config.json's documentsMode."
+        },
+        "fortmesa.logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "default": "info",
+          "description": "Log verbosity for the Saferoom extension and the local MCP proxy. Mirrors config.json's logLevel."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fortmesa",
+          "title": "FortMesa Saferoom",
+          "icon": "media/logo.svg"
+        }
+      ]
+    },
+    "icons": {
+      "fortmesa-logo": {
+        "description": "FortMesa brand mark (full logo), reproduced faithfully from media/logo.svg as an icon-font glyph sized to codicon metrics.",
+        "default": {
+          "fontPath": "media/fortmesa-icons.woff",
+          "fontCharacter": "\\E901"
+        }
+      }
+    },
+    "views": {
+      "fortmesa": [
+        {
+          "id": "fortmesa.scopes",
+          "name": "Scope selector"
+        },
+        {
+          "id": "fortmesa.identity",
+          "name": "Signed-in user",
+          "type": "webview"
+        },
+        {
+          "id": "fortmesa.saferoom",
+          "name": "Resources"
+        }
+      ]
+    },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "fortmesa.saferoom.mcpProvider",
+        "label": "FortMesa Saferoom"
+      }
+    ]
+  }
+}

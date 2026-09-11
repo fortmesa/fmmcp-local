@@ -1,0 +1,18 @@
+# This comment, and every other comment in this fixture, is EXPECTED to be
+# dropped by the TOML round-trip performed by src/registry/projectors/codex.ts
+# (smol-toml's stringify() is value-preserving, not byte-preserving). Fixture
+# tests assert on VALUES surviving, never on comment/byte survival.
+
+__testUnrelatedTopLevelSetting = "must-survive-untouched"
+
+# An unrelated top-level table that has nothing to do with MCP servers.
+[some_other_tool]
+enabled = true
+note = "leave me alone"
+
+# A sibling MCP server entry that must survive byte-for-byte in VALUE terms
+# alongside (not instead of) "fortmesa".
+[mcp_servers.unrelated_server]
+command = "/usr/local/bin/other-mcp-server"
+args = ["--flag", "value"]
+enabled = true

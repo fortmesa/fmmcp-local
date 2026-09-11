@@ -1,0 +1,98 @@
+# FortMesa Saferoom VSIX packaging exclusions.
+#
+# The packaged .vsix needs the bundled extension host code AND the bundled
+# CLI/proxy (dist-ext/**, produced by `yarn build:ext` + `yarn build:cli`)
+# plus `launch-mcp.sh` (W1 / T020: the extension spawns the proxy from its
+# OWN install path now, independent of any open workspace folder — see
+# extension.ts's `resolveServerSpec`), plus manifest/doc files that vsce
+# reads directly (package.json, README.md) and the activity-bar icon it
+# references. Everything else here is CLI/extension SOURCE (bundled, not
+# needed raw), the PnP toolchain (the bundled CLI has no runtime dependency
+# on it — see `build:cli`'s doc comment), the tsc CLI build output (a
+# separate, unbundled artifact for repo/dev use only), or workspace/agent
+# tooling that has no business in a sideloadable extension package.
+
+# Source (bundled into dist-ext/extension.cjs by esbuild — not needed raw)
+src/**
+scripts/**
+
+# CLI build output (separate artifact — dist/local-mcp/cli.js; the VSIX
+# ships dist-ext/**, not dist/**)
+dist/**
+
+# Yarn PnP toolchain (build-time only; defensively exclude node_modules in
+# case the linker is ever switched)
+.yarn/**
+.yarnrc.yml
+.pnp.cjs
+.pnp.loader.mjs
+node_modules/**
+yarn.lock
+
+# Tests / fixtures
+test/**
+**/__tests__/**
+**/*.test.mjs
+**/*.test.ts
+
+# Workspace/agent tooling and planning docs — not extension-relevant
+.agent/**
+.git/**
+.github/**
+.husky/**
+
+# Build/lint/format config — irrelevant to the packaged extension
+tsconfig.json
+eslint.config.mjs
+.prettierrc
+.prettierignore
+.gitignore
+
+# npm-tarball packing rules — governs the `fmmcp-local` npm distribution only,
+# has no meaning inside a VSIX. Must be listed here: vsce has no default
+# ignore for it, so without this line it ships inside the extension (caught by
+# a before/after VSIX content diff — it added a 15th file to the package).
+.npmignore
+
+# CI definition — build-time only, nothing to do with the packaged extension.
+# Same story as .npmignore: vsce has no default ignore for it and it leaked
+# into the VSIX until it was listed here.
+bitbucket-pipelines.yml
+
+# The npm tarball and the MCP Bundle, both written into the repo root
+# alongside the .vsix by the pipeline's package step. vsce already excludes
+# *.vsix from its own output by default, but neither of these — without them
+# the CLI tarball and the .mcpb would be embedded inside the extension.
+*.tgz
+*.mcpb
+
+# Misc repo docs not part of the VSIX-facing documentation surface
+CHANGELOG.md
+SPECS.md
+SECURITY.md
+DISTRIBUTION.md
+ERRATA.md
+TODOS.md
+AGENTS.md
+BURNDOWN-ARCHIVE.md
+BURNDOWN-DECISIONS.md
+BURNDOWN-INBOX.md
+BURNDOWN-OPEN.md
+
+# LICENSE, NOTICE and THIRD-PARTY-NOTICES.md are DELIBERATELY NOT listed
+# above — vsce includes any file it isn't told to exclude, so these three
+# ship at the extension package root by default. Called out here (as a
+# non-match) because vsce does NOT include NOTICE by default the way it
+# includes LICENSE*, and OpenVSX's license detection reads package.json's
+# "license" field plus these files at the package root — do not add any
+# of the three to this ignore list.
+#
+# CONTRIBUTING.md needs the opposite treatment: vsce's built-in
+# `defaultIgnore` list excludes CONTRIBUTING.md unconditionally (it assumes
+# a repo-only doc), and that default applies even though nothing above
+# names the file — the negation below is required to force it back in.
+!CONTRIBUTING.md
+
+# Editor/OS cruft
+**/.DS_Store
+*.tsbuildinfo

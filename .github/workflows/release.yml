@@ -1,0 +1,256 @@
+name: Release
+
+# Builds the three client-distribution artifacts and attaches them to a
+# GitHub Release. Follows the fm-infra-onboarding house pattern
+# (verdaccio-oidc-auth's release.yml, cited in that repo's docs/cost.md):
+# install -> test -> release, ubuntu-slim throughout, every Action pinned to
+# a full commit SHA, `persist-credentials: false`, and a workflow-level
+# read-only default that each job restates for itself.
+#
+# TWO DELIBERATE DEVIATIONS from that template, both because of what this
+# repo is:
+#
+#   1. No AWS role, no OIDC, no yarnstatic plugin in `install`. Those exist
+#      to fetch packages from the org registry's S3 storage. This repo is
+#      Yarn Zero-Installs: 457 dependency zips are committed under
+#      .yarn/cache and .yarnrc.yml sets enableGlobalCache:false, so
+#      `yarn install --immutable` already resolves with zero network. Adding
+#      the role would put an AWS credential in a workflow that needs none.
+#      Consequence: no `install` GitHub Environment to create either.
+#
+#   2. Yarn is invoked through the committed release binary rather than
+#      `corepack enable`. This repo's own bitbucket-pipelines.yml documents
+#      why: corepack would want to download 4.12.0, and the exact binary is
+#      already git-tracked under .yarn/releases. Keeps CI network-free.
+#
+# Artifacts are PROD builds. `package:ext:prod` strips the sandbox, next and
+# latest hostnames from every shipped file and deletes the sourcemaps, which
+# otherwise embed the original source. A plain `package:ext` build is for local
+# sideloading only; AGENTS.md says it is not shippable, and the Release page is
+# public.
+#
+# All three artifacts go to the GitHub Release page. The VSIX additionally
+# goes to Open VSX, from a separate job.
+#
+# The VS Code Marketplace is still a manual upload. Publishing there needs a
+# global Azure DevOps PAT, which Microsoft retires on 2026-12-01, and the
+# documented replacement (a managed identity with workload identity
+# federation) has no published GitHub Actions path. Building against a
+# credential with a known end date was not worth it; Open VSX needs a plain
+# token and has no such cliff.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# Read-only at the workflow level; every job below restates its own block.
+# GitHub REPLACES this default rather than merging with it, so a job that
+# forgets `contents: write` fails loudly instead of silently inheriting it.
+permissions:
+  contents: read
+
+jobs:
+  # The ONLY job that runs untrusted install-time code (dependency lifecycle
+  # scripts -- enableScripts is not disabled in this repo). `test` and
+  # `release` restore its output from cache and never run `yarn install`
+  # themselves, so a compromised postinstall never executes in the job that
+  # holds contents:write. See fm-infra-onboarding/docs/security-model.md.
+  install:
+    name: Install
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false # don't leave a git credential for a malicious postinstall to scrape
+
+      # Fully offline: every dependency zip is committed under .yarn/cache.
+      - name: Install dependencies
+        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" install --immutable
+
+      # PnP, not node-modules: `yarn install` here produces no node_modules
+      # at all. These four paths ARE the installed tree, and all of them are
+      # gitignored, so a job that skips this restore has nothing to run.
+      - name: Cache the resolved dependency tree for this run
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .pnp.cjs
+            .pnp.loader.mjs
+            .yarn/install-state.gz
+            .yarn/unplugged
+          key: pnp-${{ github.sha }}
+
+  test:
+    name: Test
+    needs: install
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Restore the dependency tree from install
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .pnp.cjs
+            .pnp.loader.mjs
+            .yarn/install-state.gz
+            .yarn/unplugged
+          key: pnp-${{ github.sha }}
+          fail-on-cache-miss: true
+
+      # This repo has no `yarn test` script. Its gate is the three below, in
+      # the order AGENTS.md requires before any artifact is built.
+      # `test:unit` runs `yarn build` itself as its first step.
+      - name: Type-check
+        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" type-check
+
+      - name: Lint
+        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" lint
+
+      - name: Unit tests
+        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" test:unit
+
+  release:
+    name: Create release
+    needs: test
+    runs-on: ubuntu-slim
+    permissions:
+      contents: write # the one credential in this workflow, and only here
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Restore the dependency tree from install
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .pnp.cjs
+            .pnp.loader.mjs
+            .yarn/install-state.gz
+            .yarn/unplugged
+          key: pnp-${{ github.sha }}
+          fail-on-cache-miss: true
+
+      # Every artifact name comes from package.json's version, so an unstamped
+      # build tagged v0.4.7 would emit files called 0.4.0. This mirrors what
+      # bitbucket-pipelines.yml already does with BITBUCKET_BUILD_NUMBER,
+      # except the tag is the source of truth rather than a build counter.
+      # Committed package.json is never changed; this edits the checkout only.
+      - name: Stamp the version from the tag
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "FATAL: tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH"; exit 1 ;;
+          esac
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf-8"));
+            pkg.version = process.argv[1];
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          ' "$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Building version $VERSION"
+
+      # One command builds all three artifacts and verifies them:
+      # verify:prod-strip greps the bundles, verify-prod-artifacts.mjs checks
+      # the packed files. A leaked non-prod hostname fails the release here.
+      # It packs the tarball too, so there is no separate pack step.
+      - name: Build the prod artifacts
+        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" package:ext:prod
+
+      # Fail loudly on a missing artifact rather than publishing a partial
+      # release. `mv` alone would only warn.
+      # Staged in release-assets/, NOT dist/: `yarn build` writes the tsc
+      # output tree to dist/, so staging here would mix compiled modules in
+      # with the artifacts and hand `files: dist/*` a set of directories.
+      - name: Collect release assets
+        run: |
+          set -eu
+          mkdir -p release-assets
+          for asset in \
+            "FortMesa-Saferoom-${VERSION}.vsix" \
+            "FortMesa-Saferoom-${VERSION}.mcpb" \
+            "fmmcp-local-${VERSION}.tgz"
+          do
+            test -f "$asset" || { echo "FATAL: expected artifact '$asset' was not produced"; exit 1; }
+            mv "$asset" release-assets/
+          done
+          ls -la release-assets
+
+      # The glob expands before the redirect creates the file, so
+      # checksums.txt never lists itself.
+      - name: Generate checksums
+        working-directory: release-assets
+        run: sha256sum * > checksums.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      # Handed to the publish job rather than rebuilt there. A second build
+      # would produce a different VSIX (zip timestamps alone differ), so the
+      # file on Open VSX would not be the file on the Release page, and
+      # neither could be checked against the other.
+      - name: Hand the artifacts to the publish job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: release-assets/
+          retention-days: 1
+
+  # Separate from `release` for one reason: that job holds `contents: write`,
+  # and the publish token must never sit in the same job as a credential that
+  # can write to the repo. It builds nothing and needs no dependency tree.
+  #
+  # The `publish` environment is where OVSX_PAT lives. Put required reviewers
+  # on it to hold a release for a human before it reaches Open VSX.
+  publish-openvsx:
+    name: Publish to Open VSX
+    needs: release
+    runs-on: ubuntu-slim
+    environment: publish
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" install --immutable
+
+      - name: Fetch the artifacts built by the release job
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Locate the VSIX
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          VSIX="release-assets/FortMesa-Saferoom-${VERSION}.vsix"
+          test -f "$VSIX" || { echo "FATAL - '$VSIX' was not in the release artifacts"; exit 1; }
+          echo "VSIX=$VSIX" >> "$GITHUB_ENV"
+          ls -la "$VSIX"
+
+      # --skip-duplicate so re-running a failed release does not die on a
+      # version Open VSX already accepted. ovsx reads OVSX_PAT from the
+      # environment; it has no --pat flag on publish.
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" ovsx publish "$VSIX" --skip-duplicate

@@ -1,0 +1,54 @@
+# npm-tarball contents for the `fmmcp-local` CLI distribution.
+#
+# WHY THIS FILE AND NOT package.json's `files`:
+# @vscode/vsce refuses to package when BOTH a .vscodeignore and a `files`
+# property exist ("VSCE does not support combining both strategies") — adding
+# `files` breaks `yarn package:ext` outright. The two artifacts also need
+# genuinely different contents (the VSIX ships dist-ext/** + media/** +
+# docs/** and NOT dist/**; the npm tarball ships dist/** and none of the
+# rest), so a single shared allowlist could only ever be wrong for one of
+# them. .npmignore is read by npm/yarn pack and ignored by vsce, which keeps
+# the two artifacts independent. See AGENTS.md § Build outputs.
+#
+# NOTE: the mere existence of this file also fixes a silent, critical bug.
+# Without it, pack falls back to .gitignore — which lists `dist/` — so the
+# tarball shipped exactly ONE dist file (the `bin` target, force-included by
+# yarn) and none of the 34 modules it imports. The packed CLI died with
+# ERR_MODULE_NOT_FOUND on first run.
+#
+# STYLE — pure allowlist, no re-exclusions. Everything is ignored, then the
+# wanted subtrees are negated back in one at a time. Do NOT write a broad
+# `!dist/**` and then try to carve `dist/extension/**` back out: Yarn Berry's
+# pack does not honour a later re-exclusion after a negation (verified — the
+# carve-out was a no-op and shipped all 56 extension files anyway). Naming
+# each wanted subtree explicitly is order-independent and fails safe: a new
+# top-level directory under dist/ stays out until someone opts it in here.
+
+*
+
+# The CLI: tsc's unbundled ESM build. These three subtrees are the whole of
+# the `bin` target's import graph (dist/local-mcp/cli.js and everything it
+# reaches).
+!dist/
+!dist/local-mcp/
+!dist/local-mcp/**
+!dist/registry/
+!dist/registry/**
+!dist/shared/
+!dist/shared/**
+
+# Deliberately NOT listed: dist/extension/** — tsc's build of src/extension/**
+# is VSIX-only. Every file there imports 'vscode', a module that exists only
+# inside the extension host and is not a declared dependency of this package.
+# Nothing under dist/local-mcp, dist/registry or dist/shared imports it
+# (verified: no `extension/` import in any of the three), so the CLI is
+# complete without it. The VSIX gets that code from the esbuild bundle
+# dist-ext/extension.cjs, never from dist/.
+
+# Required at runtime by the `sync` subcommand: src/registry/sync.ts:140
+# resolves `<packageRoot>/launch-mcp.sh` as the projected MCP server command.
+!launch-mcp.sh
+
+# package.json, README.md, CHANGELOG.md and LICENSE* are always included by
+# npm/yarn regardless of ignore rules. package.json is additionally
+# load-bearing at runtime: src/shared/version.ts reads it to resolve VERSION.
