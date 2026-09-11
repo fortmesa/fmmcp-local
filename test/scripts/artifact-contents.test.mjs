@@ -52,22 +52,54 @@ async function runYarn(args) {
   return stdout;
 }
 
+/**
+ * The files `yarn pack` would publish, read from `--json` rather than from the
+ * human log.
+ *
+ * The log form was parsed here first and it failed on CI while passing on the
+ * same tree locally, because scraping `YN0000:`-prefixed lines depends on how
+ * Yarn decides to format output, which is not a contract. `--json` emits one
+ * `{"location": "..."}` per file and is.
+ */
+async function packedFiles() {
+  const stdout = await runYarn(['pack', '--dry-run', '--json']);
+  const files = [];
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue; // a progress record, not a file record
+    }
+    if (typeof parsed.location === 'string') files.push(parsed.location);
+  }
+  return files;
+}
+
 // -- the npm tarball -------------------------------------------------------
 
 test('npm tarball: ships no test file', async () => {
   // `pack --dry-run` is the packer itself, so this reflects the published
   // tarball rather than a reading of .npmignore.
-  const stdout = await runYarn(['pack', '--dry-run']);
-  const files = stdout
-    .split('\n')
-    .map((line) => line.replace(/^.*?YN0000:\s*/, '').trim())
-    .filter((line) => line !== '' && !line.startsWith('Package archive') && line.includes('/'));
+  const files = await packedFiles();
 
-  // Guard against a vacuous pass: an unbuilt dist would list almost nothing
-  // and every assertion below would hold for the wrong reason.
+  // Guard against a vacuous pass, but on something that cannot race.
+  //
+  // This asserted `dist/local-mcp/cli.js` at first and failed on CI while
+  // passing locally on the same commit. `dist/` is shared mutable state that
+  // the suite itself rebuilds, and `node --test` runs files concurrently, so
+  // whether it is populated when this test happens to run is a coin toss.
+  // package.json is always packed, by npm's rules, whatever else is on disk.
+  //
+  // Losing the dist check costs nothing here: the probe test below creates
+  // its own file under dist/ and proves the allowlist would publish a test
+  // file placed there, which is the actual risk this file exists for.
   assert.ok(
-    files.includes('dist/local-mcp/cli.js'),
-    'expected the CLI entry in the tarball - run `yarn build` first, or the check below proves nothing',
+    files.includes('package.json'),
+    `pack produced no usable listing. It reported ${String(files.length)} files: ` +
+      `${files.slice(0, 12).join(', ')}${files.length > 12 ? ', ...' : ''}`,
   );
 
   const leaked = files.filter(looksLikeTest);
@@ -79,14 +111,15 @@ test('npm tarball: a .test.js under an allowlisted dist subtree WOULD ship', asy
   // allowlist gained a re-exclusion and the guard above can be relaxed - but
   // until then, nothing except file placement keeps tests out of the tarball,
   // which is what makes `src/**/*.test.ts` unsafe.
-  const { writeFile, rm } = await import('node:fs/promises');
+  const { mkdir, writeFile, rm } = await import('node:fs/promises');
   const probe = join(repoRoot, 'dist', 'local-mcp', '__packprobe.test.js');
+  // dist/local-mcp may not exist if this file runs before anything built it.
+  await mkdir(join(repoRoot, 'dist', 'local-mcp'), { recursive: true });
   await writeFile(probe, '// packaging probe\n');
   try {
-    const stdout = await runYarn(['pack', '--dry-run']);
-    assert.match(
-      stdout,
-      /dist\/local-mcp\/__packprobe\.test\.js/,
+    const files = await packedFiles();
+    assert.ok(
+      files.includes('dist/local-mcp/__packprobe.test.js'),
       'the allowlist no longer ships dist test files - update the comment on the placement rule below',
     );
   } finally {
