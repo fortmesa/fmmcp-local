@@ -1,217 +1,138 @@
-# fmmcp-local — FortMesa MCP Local
+# FortMesa Saferoom
 
-> Client-side components for the FortMesa MCP architecture. The Cloud MCP
-> Gateway (private `fmmcp-gw` repo) remains the single source of truth for all
-> gateway tool schemas.
+**Your security program, in the editor you already work in — without handing your files to anyone.**
 
-## Components
+FortMesa Saferoom is the local MCP server and VS Code extension for
+[FortMesa](https://fortmesa.com/). It runs on your machine, beside your coding
+agent, and gives that agent a scoped door into your FortMesa GRC data:
+controls, assets, vulnerabilities, tasks, and documents.
 
-### Local MCP proxy (CLI) — implemented
+You sign in once. You choose which security scopes the agent may touch, and
+which tools it may call. Those choices are enforced here, on your machine — not
+on the far side of a network hop where you would have to take them on trust.
 
-A stdio MCP server that bridges IDE agents (Claude Code, Cursor, Codex,
-Antigravity, VS Code, …) to the Cloud MCP Gateway over streamable HTTP with
-your bearer token attached. Gateway tools are relayed with their schemas
-**verbatim** (this repo holds zero gateway schemas). The three **documents
-tools are served locally** — their download/upload use real paths on _your_
-disk, which is exactly why they don't exist on the remote gateway surface.
+## What it lets you do
 
-Scope-lock enforcement lives here: the active environment, scope lock, and
-per-environment gateway overrides are read from
-[`~/.fmcode/config.json`](#configuration--fmcodeconfigjson) and enforced
-against every scoped call, filtering locked `grc_scopes` list results too. A
-running proxy watches that file and **hot-reloads** on change (new env,
-gateway, or scope) without dropping the stdio pipe to your agent — see
-`fmmcp-local switch` below.
+**Ask your agent about your program.** Saferoom registers a `fortmesa`
+MCP server with Claude Code, VS Code, Cursor and other MCP clients, so any of
+them can read and update FortMesa directly, in the conversation you are already
+having.
 
-### Saferoom VSIX — implemented (prototype)
+**Your documents stay on your disk.** Document tools run inside Saferoom, so
+a download writes a real file to a path you name and an upload reads one from
+your workspace — no signed links to juggle, no bytes through anyone else's
+hands. If you would rather your agent move the bytes itself, switch Documents to
+Network mode and the gateway's link-based tools take their place.
 
-A self-contained VS Code extension ("FortMesa Saferoom") providing the same
-auth, environment switching, scope locking, IDE-sync, and (new) per-tool
-enable/disable functionality as the CLI, through three tree views (Scopes,
-Identity, Saferoom launcher) in its own activity-bar container plus a
-"Settings" webview for everything else (Environment, Agents, Tools). No
-workspace folder needs to be open — the extension bundles its own copy of
-the local MCP. It reads and writes the exact same
-`~/.fmcode/config.json` / `credentials.json` files as the CLI, so the two
-stay in lockstep — switch environments from either one and the other picks it
-up. See **[docs/VSIX.md](docs/VSIX.md)** if you'd rather drive FortMesa from a
-UI than the command line.
+**Fence the blast radius.** Lock the agent to one scope, to a named set, or
+leave it open to everything you are entitled to. Turn any tool off and it
+disappears from the agent's tool list — and is refused if the agent asks for it
+by name anyway.
 
-## Quick start (CLI)
+**Point it at the FortMesa that is yours.** Saferoom talks to FortMesa
+production out of the box. If your organisation runs its own gateway, add it
+under **Data region ▸ Add server**, name it, and select it — no config file to
+hand-edit, and it stays available in production builds.
 
-```bash
-yarn install && yarn build
-```
+**Change your mind without restarting anything.** Switch environment, scope, or
+tool selection and every connected agent picks it up straight away. The status
+bar always says where you stand: `Not signed-in`, the scope's own name,
+`Connected · no scopes`, or `Connected`.
 
-The canonical way an IDE launches the proxy is **flag-less** — `launch-mcp.sh`
-takes no arguments; the active environment, gateway, and scope lock all come
-from `~/.fmcode/config.json` (see below), so registering an IDE once and then
-switching environments/scopes later never requires touching that IDE's config
-again:
+**See what your agent is doing, while it does it.** The Event viewer at the top
+of the FortMesa sidebar is a live timeline of everything passing through
+Saferoom — tool calls, local and relayed alike, plus sign-in, token refresh and
+expiry, and gateway connects. Each entry appears the moment work starts and updates
+in place when it finishes: `✓ documents · upload_url  120ms  now`. The
+expand icon opens a fullscreen view with the last 200 events, the scope each
+call ran in, and whether it was served locally or relayed.
 
-```bash
-# Uses config.json's activeEnv/scopeLock as-is (defaults to env "sandbox",
-# gateway http://localhost:3020/mcp, unlocked, on a fresh install)
-yarn node dist/local-mcp/cli.js
-```
+**The timeline records the tool, the scope, the outcome and how long it took —
+and deliberately nothing else.** No request or response payloads, no file paths,
+no document titles, no email addresses, no tokens, no raw error text. Those are
+not filtered out before display; they are never collected. Nothing is written to
+disk either: the timeline lives in memory for the life of the editor window, and
+closing the window leaves no trace of it behind.
 
-For manual/one-off runs outside any IDE (local testing, debugging a specific
-environment), CLI flags override config.json for that invocation only:
+## How it works
 
-```bash
-# Local dev pod (gateway sidecar on :3020, sandbox credentials)
-yarn node dist/local-mcp/cli.js --env sandbox
+Your agent starts Saferoom on your machine. Saferoom connects onward to the
+FortMesa MCP gateway at `https://mcp.fortmesa.com/mcp` over HTTPS with your
+bearer token attached — allow that host if your network filters outbound
+traffic.
 
-# Against a deployed gateway
-yarn node dist/local-mcp/cli.js --env next --gateway https://mcp-next.dev.fort.blue/mcp
+Gateway tools are relayed to your agent exactly as the gateway describes them,
+so Saferoom never presents an altered version of a tool — and it keeps serving
+the last list it was given, so a brief gateway outage does not make your agent's
+tools disappear mid-task. Document tools are the exception: the gateway has no
+filesystem, so in the default Local-file mode Saferoom answers those itself. Your scope lock is
+applied here too — on every scoped call and on the results of scope listings,
+before the request leaves your machine.
 
-# Scope-locked (names resolved via scopeMap in the credentials file, or a
-# live gateway lookup + cache if a name isn't cached yet)
-yarn node dist/local-mcp/cli.js --env prod --scope-lock varmed-management
-```
+The extension and the CLI share `~/.fmcode/config.json` and
+`~/.fmcode/credentials.json`, so a change made in either is picked up by the
+other and by every running agent.
 
-Register with an MCP client like any stdio server — either let the CLI wire up
-every IDE it detects on this machine in one shot:
+## Install
 
-```bash
-yarn node dist/local-mcp/cli.js sync
-```
+Each release publishes the extension to **Open VSX** and attaches three
+artifacts to its [GitHub Release](https://github.com/fortmesa/fmmcp-local/releases):
 
-or point a client at `launch-mcp.sh` directly, with no arguments:
+| Artifact                           | For                                                                                                     |
+| :--------------------------------- | :------------------------------------------------------------------------------------------------------ |
+| `FortMesa-Saferoom-<version>.vsix` | VS Code, Cursor — install from Open VSX, or sideload the file (self-contained: no repo checkout needed) |
+| `FortMesa-Saferoom-<version>.mcpb` | Claude Desktop and other MCP Bundle hosts                                                               |
+| `fmmcp-local-<version>.tgz`        | The CLI on its own (`fmmcp-local`)                                                                      |
 
-```bash
-claude mcp add-json fortmesa '{"command":"/workspaces/fmmcp-local/launch-mcp.sh","args":[]}'
-```
+Then open the **FortMesa Saferoom** view in the activity bar and choose **Sign
+In**. Sign-in is OAuth 2.0 with PKCE against FortMesa's identity provider, and
+your token is written to `~/.fmcode/credentials.json` with `0600` permissions
+and never leaves the machine.
 
-## Management subcommands
+## Settings
 
-Everything below reads/writes `~/.fmcode/config.json` and
-`~/.fmcode/credentials.json` — the same files the Saferoom VSIX uses, so the
-CLI and the extension are always in sync. None of these start the proxy; run
-them with `yarn node dist/local-mcp/cli.js <subcommand> ...`.
+Every `fortmesa.*` VS Code setting has a matching `config.json` key. Edit either
+one, or use the Saferoom UI — they are the same setting.
 
-| Subcommand                               | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| :--------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `status`                                 | Prints `config.json`, the effective startup values (env/gateway/scope-lock after flag precedence), and whether a credential is present for the active env.                                                                                                                                                                                                                                                                                                                                                                               |
-| `switch --env <name>`                    | Sets the active environment. Any running proxy hot-reloads onto it — no restart.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `switch --scope <name>[,<name>...]`      | Sets the scope lock: one name = `single` mode, more than one = `multi` (expert) mode.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `switch --unlock`                        | Explicitly disables the scope lock (all authorized scopes reachable).                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `token set <env> <token> [--base <url>]` | Stores a pasted API token for `<env>` in `credentials.json` (`--base` creates the env block if it doesn't exist yet).                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `scopes list [--env <name>]`             | Looks up scope name → scope ID via the live gateway, prints it, and caches it into `credentials.json`'s `scopeMap` (this is what makes `switch --scope <name>` and `--scope-lock <name>` work without repeating the lookup).                                                                                                                                                                                                                                                                                                             |
-| `sync`                                   | Projects the canonical `fortmesa` MCP server entry into every detected, opted-in IDE (Claude Code, Cursor, Codex, Antigravity — VS Code registers itself live via the Saferoom extension instead of a file projector) and prints a per-target report with pick-up instructions (e.g. "restart session", "refresh /mcp").                                                                                                                                                                                                                 |
-| `login [--env <name>] [--no-browser]`    | OAuth 2.0 code+PKCE sign-in: opens a browser and completes a local loopback callback, or (on a remote/SSH shell, or with `--no-browser`) prints the URL and reads the resulting code back from stdin. **Current status**: this command is fully implemented and correct, but the backend `appstoreAuth` client registration it depends on has not been created yet (separate, user-authorized ops work — VSIX-PLAN.md §8); until that lands it will fail at the token-exchange step with a clear error. Use `token set` in the meantime. |
+| Setting                                                                  | What it does                                                                                                                    | Values                              | Default                 |
+| :----------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------ | :---------------------------------- | :---------------------- |
+| `fortmesa.activeEnv`                                                     | The active FortMesa environment; switching re-targets the MCP server for every synced IDE                                       | environment name                    | `prod`                  |
+| `fortmesa.environments`                                                  | Environments Saferoom can target, including servers you add yourself                                                            | map of env name → `{ gateway }`     | production gateway only |
+| `fortmesa.scopeLock.mode`                                                | How the accessible-scope set is expressed                                                                                       | `single` / `multi` / `unlocked`     | `unlocked`              |
+| `fortmesa.scopeLock.scopes`                                              | The accessible scope name(s); ignored when `mode` is `unlocked`                                                                 | array of scope names                | `[]`                    |
+| `fortmesa.disabledTools`                                                 | Tool names hidden from the agent's tool list and refused on a direct call                                                       | array of tool names                 | `[]`                    |
+| `fortmesa.documentsMode`                                                 | Which document tools are exposed: `local` reads and writes your disk, `network` exposes the gateway's signed-link tools instead | `local` / `network`                 | `local`                 |
+| `fortmesa.ideSync.<claude\|vscode\|cursor\|codex\|antigravity\|copilot>` | Keep the `fortmesa` MCP server registration synced to that IDE                                                                  | boolean                             | `true`                  |
+| `fortmesa.logLevel`                                                      | Log verbosity for the extension's output channel and the local MCP server                                                       | `debug` / `info` / `warn` / `error` | `info`                  |
 
-Examples:
+`~/.fmcode/config.json` and `~/.fmcode/credentials.json` (`0600`) are
+machine-scoped on purpose — Settings Sync never carries them to another host.
 
-```bash
-yarn node dist/local-mcp/cli.js status
-yarn node dist/local-mcp/cli.js switch --env next
-yarn node dist/local-mcp/cli.js switch --scope barsoommsp
-yarn node dist/local-mcp/cli.js switch --scope barsoommsp,aws-test   # expert multi-scope
-yarn node dist/local-mcp/cli.js switch --unlock
-yarn node dist/local-mcp/cli.js token set sandbox eyJhbGciOi... --base http://localhost:3010
-yarn node dist/local-mcp/cli.js scopes list --env sandbox
-yarn node dist/local-mcp/cli.js sync
-yarn node dist/local-mcp/cli.js login --env sandbox --no-browser
-```
+## Requirements
 
-## Configuration — `~/.fmcode/config.json`
+- Node.js **≥ 24**
+- VS Code **≥ 1.102** (for the extension)
+- A FortMesa account
 
-The canonical registry shared by the CLI, the Saferoom VSIX, and every running
-proxy instance: which environment is active, the scope lock, per-environment
-gateway URL overrides, per-IDE sync opt-outs, and log level. It's created
-automatically with built-in defaults the first time anything reads it (e.g.
-the first `status` call); you don't need to hand-write it, though you can —
-edits are picked up live by any running proxy.
+## Documentation
 
-```jsonc
-{
-  "version": 1,
-  "activeEnv": "sandbox",
-  "scopeLock": { "mode": "single", "scopes": ["barsoommsp"] }, // mode: single | multi | unlocked
-  "environments": {
-    "sandbox": { "gateway": "http://localhost:3020/mcp" },
-    "next": { "gateway": "https://mcp-next.dev.fort.blue/mcp" },
-    "prod": { "gateway": "https://mcp.fortmesa.com/mcp" },
-  },
-  "ideSync": { "claude": true, "vscode": true, "cursor": true, "codex": true, "antigravity": true },
-  "logLevel": "info",
-}
-```
+- [CONTRIBUTING.md](CONTRIBUTING.md) — contribution guidelines, including the
+  required sign-off
+- [LICENSE](LICENSE) and [NOTICE](NOTICE) — licensing and attribution
+- [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) — bundled third-party
+  dependencies
 
-**Precedence at proxy startup**: explicit CLI flags (`--env`/`--gateway`/`--scope-lock`)
-override `config.json`, which overrides the built-in defaults shown above.
-Once the proxy is running, only `config.json` drives reloads — flags are
-consulted at startup only, so `switch`/the Saferoom UI are the way to change a
-live session.
-
-Every key here is also exposed as a `fortmesa.*` VS Code setting when you use
-the Saferoom extension, and the two stay reconciled automatically. For the
-full knob-by-knob mapping (`config.json` key ↔ VS Code setting ↔ CLI
-flag/command ↔ Saferoom UI control), see
-**[docs/CONFIG-REFERENCE.md](docs/CONFIG-REFERENCE.md)**.
-
-## Credentials — `~/.fmcode/credentials.json`
-
-Resolved by the TokenProvider chain (AWS CLI model, v1 subset):
-
-1. `FORTMESA_API_TOKEN` (+ optional `FORTMESA_API_BASE`) environment variables
-2. `~/.fmcode/credentials.json` — multi-env format, block selected by
-   `--env`/`config.json`'s `activeEnv`
-
-The bearer is attached to every gateway request; the same credentials drive the
-local documents tools' direct API calls. Tokens must be FortMesa **API (M2M)
-tokens** — the v2 API does not accept browser session tokens.
-
-You don't need to hand-edit this file: `token set` and `login` (and their
-Saferoom VSIX equivalents — the Signed-in user pane's **Sign in** button and
-its **Advanced: paste an access token** control) all write to it for you, atomically and with `0600` permissions. Scope-name
-resolution (`scopes list`, or the first use of a not-yet-cached
-`--scope-lock`/`switch --scope` name) also caches into this file's per-env
-`scopeMap`, so subsequent lookups are gateway-free.
-
-## Testing
-
-```bash
-# Full chain: runner ↔ [stdio] ↔ proxy ↔ [HTTP+bearer] ↔ gateway (:3021) ↔ API
-yarn node scripts/test-runner.mjs --env sandbox
-
-# Config-driven hot-reload: boot flag-less, mutate config.json, assert
-# tools/list_changed + scope-lock enforcement flips without dropping the pipe
-yarn node scripts/hot-reload-test.mjs
-```
-
-Requires `/workspaces/fmmcp-gw` built (`yarn build` there) and valid `sandbox`
-credentials. Expected: 16 tools (13 proxied + 3 local documents), ~90 tests.
-
-## Project Structure
-
-```
-src/local-mcp/
-├── cli.ts                  # entry: proxy startup, hot-reload wiring, and all management subcommands
-├── proxy.ts                # stdio server ↔ gateway HTTP client, incl. in-process reload()
-├── auth/token-provider.ts  # env → ~/.fmcode/credentials.json
-└── tools/
-    ├── registry.ts         # captures registerTool() calls; Zod → JSON Schema
-    └── documents.ts        # migrated from fmmcp-gw (path-based file I/O)
-src/registry/                # canonical config + IDE projection layer — shared by the CLI and the extension; never imports "vscode"
-├── config.ts                # ~/.fmcode/config.json schema, load/save/watch, flag precedence
-├── credentials.ts           # ~/.fmcode/credentials.json read/write (shared by CLI + extension auth commands)
-├── scope-resolve.ts         # scope name -> scopeId resolution + scopeMap caching
-├── sync.ts                  # drives the file-based IDE projectors below
-├── oauth-flow.ts / pkce.ts  # OAuth 2.0 code+PKCE login (loopback + paste-code paths)
-└── projectors/               # claude.ts, cursor.ts, codex.ts, antigravity.ts — one canonical `fortmesa` server entry, surgically merged
-src/extension/                # Saferoom VSIX — the UI shell over registry + engine; the only code allowed to import "vscode"
-src/shared/                   # copies from fmmcp-gw (see .agent/DECISIONS.md D005)
-launch-mcp.sh                 # the stable, args-free entrypoint every IDE config points at
-```
+Questions, bugs, and feature requests:
+[github.com/fortmesa/fmmcp-local/issues](https://github.com/fortmesa/fmmcp-local/issues).
+More about FortMesa at [fortmesa.com](https://fortmesa.com/).
 
 ## License
 
-Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text and
-[NOTICE](NOTICE) for copyright and trademark attribution. Bundled
-third-party dependencies are listed in
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) (generated — see
-`scripts/release/generate-third-party-notices.mjs`). Contribution
-guidelines, including the required sign-off, are in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Apache License, Version 2.0 — see [LICENSE](LICENSE) for the full text and
+[NOTICE](NOTICE) for copyright and trademark attribution. Bundled third-party
+dependencies are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+---
+
+<sub>This repository is the public mirror of FortMesa's internal development
+repository; releases are published here as snapshots.</sub>

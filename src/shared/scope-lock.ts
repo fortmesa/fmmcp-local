@@ -82,6 +82,20 @@ export class ScopeLock {
   }
 
   /**
+   * This scope's display name, when the lock knows one.
+   *
+   * A name exists here exactly when the proxy is scope-locked to that scope,
+   * which is exactly when the Scope selector in the sidebar is already
+   * showing that name. The Event viewer relies on that equivalence: it may
+   * print a scope NAME only when the name is already on screen, and falls
+   * back to a six-character short id otherwise. See
+   * `registry/events/summarize.ts`'s `scopeLabel`.
+   */
+  nameFor(scopeId: string): string | undefined {
+    return this.names.get(scopeId);
+  }
+
+  /**
    * Assert that the given scopeId is authorized.
    * Throws a descriptive Error when locked and the ID is not in the authorized
    * set. Tool handlers catch this and return toolError().

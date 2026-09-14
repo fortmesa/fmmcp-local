@@ -78,7 +78,7 @@ function stubFetch(plan) {
   let listIdx = 0;
   globalThis.fetch = async (url, config = {}) => {
     const u = new URL(url);
-    calls.push({ url: u, method: config.method ?? 'GET' });
+    calls.push({ url: u, method: config.method ?? 'GET', requestBody: config.body });
     let body;
     if ((config.method ?? 'GET') === 'POST') {
       body = plan.upload;
@@ -94,6 +94,13 @@ function stubFetch(plan) {
       globalThis.fetch = original;
     },
   };
+}
+
+/** Pulls the multipart `filename="..."` off the "file" field of a raw upload body. */
+function multipartFileName(requestBody) {
+  const text = Buffer.isBuffer(requestBody) ? requestBody.toString('latin1') : String(requestBody);
+  const match = /name="file";\s*filename="([^"]*)"/.exec(text);
+  return match ? match[1] : undefined;
 }
 
 async function withTempFile(bytes, fn) {
@@ -364,4 +371,74 @@ test("grc_documents_write update: the no-op guard is the gateway's, and the call
     documentId: 'doc-1',
   });
   assert.deepEqual(relay.calls[0].args, { method: 'update', scopeId: SCOPE, documentId: 'doc-1' });
+});
+
+// ── MFDV-489: upload honours fileName instead of the local basename ─────────
+
+test('grc_documents_write upload: MFDV-489 — provided fileName is used, not the local basename', async () => {
+  const stub = stubFetch({
+    upload: { id: 'doc-1', docName: 'fm-local-test-2026-09-11.txt', createdAt: 'x', fileVersions: ['v1'] },
+    getSequence: [{ id: 'doc-1', fileVersions: ['v1'] }],
+  });
+  try {
+    const out = await withTempFile(10, (path) =>
+      buildRegistry().call('grc_documents_write', {
+        method: 'upload',
+        scopeId: SCOPE,
+        filePath: path, // basename is always "evidence.txt" (withTempFile)
+        fileName: 'fm-local-test-2026-09-11.txt',
+      }),
+    );
+    const post = stub.calls.find((c) => c.method === 'POST');
+    assert.equal(
+      multipartFileName(post.requestBody),
+      'fm-local-test-2026-09-11.txt',
+      'the multipart field must carry fileName, not the local basename — fmweb-be stores ' +
+        "multer's originalname verbatim (document.service.ts:847)",
+    );
+    assert.equal(payload(out).title, 'fm-local-test-2026-09-11.txt');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('grc_documents_write upload: absent fileName still falls back to the local basename', async () => {
+  const stub = stubFetch({
+    upload: { id: 'doc-1', docName: 'evidence.txt', createdAt: 'x', fileVersions: ['v1'] },
+    getSequence: [{ id: 'doc-1', fileVersions: ['v1'] }],
+  });
+  try {
+    await withTempFile(10, (path) =>
+      buildRegistry().call('grc_documents_write', { method: 'upload', scopeId: SCOPE, filePath: path }),
+    );
+    const post = stub.calls.find((c) => c.method === 'POST');
+    assert.equal(multipartFileName(post.requestBody), 'evidence.txt');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('grc_documents_write upload: a fileName containing a path separator is rejected before any request is sent', async () => {
+  const stub = stubFetch({ upload: {}, getSequence: [{}] });
+  try {
+    const out = await withTempFile(10, (path) =>
+      buildRegistry().call('grc_documents_write', {
+        method: 'upload',
+        scopeId: SCOPE,
+        filePath: path,
+        fileName: '../escape.txt',
+      }),
+    );
+    assert.equal(out.isError, true);
+    assert.match(out.content[0].text, /must be a plain file name, not a path/);
+    assert.equal(stub.calls.length, 0, 'no request should be issued once fileName fails validation');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('grc_documents_write: schema documents fileName for upload, not only upload_url', () => {
+  const def = defOf('grc_documents_write');
+  const desc = def.inputSchema.properties.fileName.description;
+  assert.match(desc, /optional for upload/);
 });

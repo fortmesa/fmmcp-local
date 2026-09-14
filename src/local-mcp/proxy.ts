@@ -9,6 +9,10 @@ import { ReloadState } from './reload-state.js';
 import { ToolSchemaCache } from './tool-schema-cache.js';
 import { dispatchesLocally, mergeToolLists, type DocumentsMode } from '../registry/documents-mode.js';
 import { NO_TOOL_CONTEXT, type ToolContext } from './tools/registry.js';
+import { NO_EVENT_CLIENT, type EventClient } from './event-client.js';
+import { newEventId, type ErrorClass, type EventKind, type EventOutcome } from '../registry/events/event-record.js';
+import { classifyError } from '../registry/events/summarize.js';
+import { beginToolEvent } from './tool-events.js';
 import type { LocalToolRegistry } from './tools/registry.js';
 
 /**
@@ -37,6 +41,13 @@ export interface ProxyOptions {
   readonly documentsMode: DocumentsMode;
   readonly log: (message: string) => void;
   readonly clientVersion: string;
+  /**
+   * Sink for the Event viewer's timeline (`event-client.ts`). Optional and
+   * defaulted to a discard, so every existing caller and every test keeps its
+   * current behaviour and the proxy runs identically when no Saferoom
+   * extension host is listening.
+   */
+  readonly events?: EventClient;
   /**
    * Optional pre-connected gateway client. `cli.ts` sometimes has to connect
    * one early — e.g. to resolve a scope lock via the live gateway
@@ -150,6 +161,7 @@ function filterScopesResult(result: CallToolResult, lock: ScopeLock, log: (messa
  */
 export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy> {
   const { gatewayUrl, bearerToken, registry, log, clientVersion } = options;
+  const events = options.events ?? NO_EVENT_CLIENT;
   // `lock` is reassigned in reload() below (a fresh ScopeLock per switch), so
   // it is bound with `let` here in startProxy's function scope — the
   // setRequestHandler closures further down read this same outer binding on
@@ -170,6 +182,23 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
   // reload must NOT keep serving the previous environment and scope.
   const reloadState = new ReloadState();
 
+  /**
+   * Publish one lifecycle event (gateway connect/disconnect/reload) to the
+   * Event viewer. Tool calls go through `beginToolEvent` below instead,
+   * because they are a pair: a `running` row, then the same id settled.
+   */
+  const emitLifecycle = (kind: EventKind, method: string, outcome: EventOutcome, errorClass?: ErrorClass): void => {
+    events.emit({
+      id: newEventId(),
+      ts: Date.now(),
+      kind,
+      family: 'gateway',
+      method,
+      outcome,
+      ...(errorClass === undefined ? {} : { errorClass }),
+    });
+  };
+
   // ── Upstream: streamable HTTP client to the gateway ────────
   // Reassigned in reload() below when the upstream gateway connection is
   // rebuilt — bound with `let` for the same reason as `lock` above.
@@ -181,6 +210,7 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
     gatewayClient = await connectGateway(gatewayUrl, bearerToken, clientVersion);
     log(`Connected to gateway at ${gatewayUrl.toString()}`);
   }
+  emitLifecycle('gateway.connect', 'connect', 'ok');
 
   // ── Downstream: stdio server facing the IDE ────────────────
   // McpServer wrapper for lifecycle, but handlers go on the underlying
@@ -251,63 +281,94 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
   server.setRequestHandler('tools/call', async (request, ctx): Promise<CallToolResult> => {
     const name = request.params.name;
     const args = request.params.arguments ?? {};
-
-    // A failed reload left this proxy bound to an environment/scope the user
-    // has already moved away from. Refuse everything rather than quietly keep
-    // serving it — including local tools, since the credentials behind them
-    // are part of the same stale binding.
-    const blockedReason = reloadState.blockedReason;
-    if (blockedReason !== undefined) {
-      return toolError(blockedReason);
-    }
-
-    // W3 tool selector (D-U4): a disabled tool is absent from tools/list, but
-    // a stale/direct call must still be rejected with a clear isError rather
-    // than silently falling through to local dispatch or gateway relay.
-    if (disabledTools.has(name)) {
-      return toolError(`tool '${name}' is disabled in Saferoom settings`);
-    }
-
-    // Scope-lock enforcement (relocated from the gateway): reject any call
-    // naming an unauthorized scope before it does local I/O or leaves the box.
-    const scopeId = args.scopeId;
-    if (typeof scopeId === 'string' && scopeId !== '') {
-      try {
-        lock.assertAuthorized(scopeId);
-      } catch (lockError: unknown) {
-        return toolError(lockError instanceof Error ? lockError.message : String(lockError));
-      }
-    }
-
-    // Same rule as the advertised list — in network mode a documents call falls
-    // through to the gateway relay below instead of the local registry.
-    if (dispatchesLocally(name, documentsMode, registry.has(name))) {
-      return registry.call(name, args, makeToolContext(request.params._meta?.progressToken, ctx));
-    }
-
-    // F9: a reload() in flight can close the OLD gateway client out from
-    // under a call already in progress against it (reload() below connects
-    // the new client before closing the old one, but an in-flight call on
-    // the old client can still see its transport closed mid-request).
-    // Surface a clear, retryable error instead of a raw transport rejection.
-    let result: CallToolResult;
+    // The Event viewer's single hook point: exactly one timeline row per
+    // handled call. `finalize()` in the `finally` below is what makes that
+    // true structurally: a future return path that forgets to settle still
+    // closes its row instead of leaving it stuck on `●`.
+    const event = beginToolEvent(events, name, args, (scopeId) => lock.nameFor(scopeId));
     try {
-      result = await gatewayClient.callTool({ name, arguments: args });
-    } catch (relayError: unknown) {
-      const detail = relayError instanceof Error ? relayError.message : String(relayError);
-      log(`CallTool relay failed for "${name}" (${detail})`);
-      // Do NOT assert a cause we have not established. This catch sees EVERY relay failure --
-      // upstream rate limiting, a saturated gateway connection under a wide parallel burst, an
-      // API timeout -- not just the reload() race the F9 note above describes. Reporting all of
-      // them as "environment switched" handed agents a confident and usually false diagnosis
-      // while discarding the only useful information, the underlying error (2026-09-02 defect
-      // report, ADDITIONAL). Retry advice is still correct; the attribution was not.
-      return toolError(`gateway call for '${name}' failed and may be retryable: ${detail}`);
+      // A failed reload left this proxy bound to an environment/scope the user
+      // has already moved away from. Refuse everything rather than quietly keep
+      // serving it — including local tools, since the credentials behind them
+      // are part of the same stale binding.
+      const blockedReason = reloadState.blockedReason;
+      if (blockedReason !== undefined) {
+        event.settle('error', { errorClass: 'blocked' });
+        return toolError(blockedReason);
+      }
+
+      // W3 tool selector (D-U4): a disabled tool is absent from tools/list, but
+      // a stale/direct call must still be rejected with a clear isError rather
+      // than silently falling through to local dispatch or gateway relay.
+      if (disabledTools.has(name)) {
+        event.settle('error', { errorClass: 'blocked' });
+        return toolError(`tool '${name}' is disabled in Saferoom settings`);
+      }
+
+      // Scope-lock enforcement (relocated from the gateway): reject any call
+      // naming an unauthorized scope before it does local I/O or leaves the box.
+      const scopeId = args.scopeId;
+      if (typeof scopeId === 'string' && scopeId !== '') {
+        try {
+          lock.assertAuthorized(scopeId);
+        } catch (lockError: unknown) {
+          event.settle('error', { errorClass: 'blocked' });
+          return toolError(lockError instanceof Error ? lockError.message : String(lockError));
+        }
+      }
+
+      // Same rule as the advertised list — in network mode a documents call falls
+      // through to the gateway relay below instead of the local registry.
+      if (dispatchesLocally(name, documentsMode, registry.has(name))) {
+        // A local tool signals failure with `isError` rather than by throwing,
+        // so the outcome is read off the result, not off a catch. The result's
+        // CONTENT is never inspected — only the boolean — because that content
+        // is the tool's payload.
+        let local: CallToolResult;
+        try {
+          local = await registry.call(name, args, makeToolContext(request.params._meta?.progressToken, ctx));
+        } catch (localError: unknown) {
+          event.settle('error', { errorClass: classifyError(localError), relayed: false });
+          throw localError;
+        }
+        event.settle(local.isError === true ? 'error' : 'ok', {
+          relayed: false,
+          ...(local.isError === true ? { errorClass: 'error' as const } : {}),
+        });
+        return local;
+      }
+
+      // F9: a reload() in flight can close the OLD gateway client out from
+      // under a call already in progress against it (reload() below connects
+      // the new client before closing the old one, but an in-flight call on
+      // the old client can still see its transport closed mid-request).
+      // Surface a clear, retryable error instead of a raw transport rejection.
+      let result: CallToolResult;
+      try {
+        result = await gatewayClient.callTool({ name, arguments: args });
+      } catch (relayError: unknown) {
+        const detail = relayError instanceof Error ? relayError.message : String(relayError);
+        log(`CallTool relay failed for "${name}" (${detail})`);
+        event.settle('error', { errorClass: classifyError(relayError), relayed: true });
+        // Do NOT assert a cause we have not established. This catch sees EVERY relay failure --
+        // upstream rate limiting, a saturated gateway connection under a wide parallel burst, an
+        // API timeout -- not just the reload() race the F9 note above describes. Reporting all of
+        // them as "environment switched" handed agents a confident and usually false diagnosis
+        // while discarding the only useful information, the underlying error (2026-09-02 defect
+        // report, ADDITIONAL). Retry advice is still correct; the attribution was not.
+        return toolError(`gateway call for '${name}' failed and may be retryable: ${detail}`);
+      }
+      event.settle(result.isError === true ? 'error' : 'ok', {
+        relayed: true,
+        ...(result.isError === true ? { errorClass: 'error' as const } : {}),
+      });
+      if (name === 'grc_scopes' && args.method === 'list' && lock.isLocked) {
+        return filterScopesResult(result, lock, log);
+      }
+      return result;
+    } finally {
+      event.finalize();
     }
-    if (name === 'grc_scopes' && args.method === 'list' && lock.isLocked) {
-      return filterScopesResult(result, lock, log);
-    }
-    return result;
   });
 
   const stdioTransport = new StdioServerTransport();
@@ -324,6 +385,8 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
 
   return {
     close: async () => {
+      emitLifecycle('gateway.disconnect', 'disconnect', 'ok');
+      events.close();
       await mcp.close();
       await gatewayClient.close();
     },
@@ -359,6 +422,7 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
         // reload succeeds. Nothing else is mutated, so a later successful reload
         // recovers cleanly.
         reloadState.markFailed(detail);
+        emitLifecycle('gateway.reconnect', 'reconnect', 'error', classifyError(error));
         log(
           `Reload to ${next.gatewayUrl.toString()} failed: ${detail} — QUARANTINED: refusing all tool calls ` +
             `until a reload succeeds (the previous environment and scope are no longer served)`,
@@ -386,6 +450,7 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
       log(`Reload: local documents tools now targeting API base ${next.apiBaseUrl}`);
 
       reloadState.markSucceeded();
+      emitLifecycle('gateway.reconnect', 'reconnect', 'ok');
 
       mcp.sendToolListChanged();
       log('Reload: sent tools/list_changed notification to the agent');

@@ -1,6 +1,6 @@
 {
   "name": "saferoom",
-  "version": "0.7.91",
+  "version": "0.8.94",
   "description": "Environment, scope, and credential management for the FortMesa MCP proxy — across Claude Code, VS Code, Cursor, Codex, and Antigravity.",
   "displayName": "FortMesa Saferoom",
   "publisher": "fortmesa",
@@ -121,6 +121,12 @@
         "title": "Settings",
         "category": "FortMesa",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "fortmesa.openEventViewer",
+        "title": "Open Event Viewer",
+        "category": "FortMesa",
+        "icon": "$(screen-full)"
       }
     ],
     "menus": {
@@ -133,6 +139,11 @@
         {
           "command": "fortmesa.login",
           "when": "view == fortmesa.identity",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fortmesa.openEventViewer",
+          "when": "view == fortmesa.events",
           "group": "navigation@1"
         }
       ]
@@ -289,6 +300,11 @@
         {
           "id": "fortmesa.scopes",
           "name": "Scope selector"
+        },
+        {
+          "id": "fortmesa.events",
+          "name": "Event viewer",
+          "type": "webview"
         },
         {
           "id": "fortmesa.identity",

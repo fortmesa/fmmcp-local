@@ -222,6 +222,39 @@ The `.agent/` directory is this repo's knowledge base:
 | `JOURNAL-NOTES.md`  | Curated learnings, anti-patterns, and gotchas                                               |
 | `JOURNAL-STREAM.md` | Unprocessed entries — triage into JOURNAL-NOTES or discard                                  |
 
+## README authoring standard
+
+`README.md` is a **user-facing** document, not an architecture summary. Its
+reader is a security or engineering lead evaluating or installing Saferoom, and
+the developer who will run it beside their coding agent.
+
+Write it to the **"What's New" (User Changelog) standard** in the
+`release-management` skill
+(`/workspaces/fm-devcontainer/.agent/skills/release-management/SKILL.md`,
+§ Changelog) — product language, few items, value over enumeration; each
+capability a bold thesis sentence followed by plain prose saying what the reader
+can now do and why it matters. Never dev-only concerns: no linting, refactors,
+line counts, or architecture jargon. Describe implementation only where the
+reader needs it to **decide** or to **operate**.
+
+On top of that voice, keep the technical hints a README owes its reader, stated
+as instructions rather than architecture: the install artifacts table, the
+settings table, requirements, file paths a user edits, and hosts or URLs a user
+must allow.
+
+Standing constraints:
+
+- Only `CONTRIBUTING.md`, `LICENSE`, `NOTICE`, `README.md` and
+  `THIRD-PARTY-NOTICES.md` may be referenced as repo files. Settings are shown
+  inline and redacted.
+- Every claim must be true of the shipping version — check `src/` and
+  `CHANGELOG.md` rather than inventing a capability.
+- **Reviewed at every `/release`.** When a release changes what a user can do,
+  the README is updated in the **same commit**, and it must not contradict that
+  release's `### What's New`.
+
+Recorded as `.agent/DECISIONS.md` D020 (PO ruling, 2026-09-13).
+
 ## Governance Files
 
 | File            | Workflow    | Purpose                                  |

@@ -8,11 +8,13 @@ import { currentCredentialEnv, setCredentialProvider } from '../shared/api-clien
 import { ScopeLock, resolveScopeLock } from '../shared/scope-lock.js';
 import type { AuthorizedScope } from '../shared/scope-lock.js';
 import { VERSION } from '../shared/version.js';
-import { resolveCredentials } from './auth/token-provider.js';
+import { isExpiredCredentialError, resolveCredentials } from './auth/token-provider.js';
 import { registerDocumentTools } from './tools/documents.js';
 import type { GatewayRelay } from './tools/documents.js';
 import { LocalToolRegistry } from './tools/registry.js';
 import { connectGateway, startProxy } from './proxy.js';
+import { createEventClient } from './event-client.js';
+import { emitExpiredEvent, emitRefreshEvent } from './auth-events.js';
 import type { ConnectedProxy } from './proxy.js';
 import { loadConfig, resolveEffectiveStartup, saveConfig, watchConfig } from '../registry/config.js';
 import { prodWarning } from '../registry/environments.js';
@@ -295,12 +297,25 @@ async function runProxy(args: string[]): Promise<void> {
   if (prodNotice !== undefined) log(prodNotice);
   const gatewayUrl = new URL(effective.gatewayUrl);
 
+  // ── Event viewer wire (best effort) ─────────────────────────
+  // Connects to the Saferoom extension host's sink if one is listening on
+  // this machine; drops every record on the floor if not, which is the normal
+  // case for a proxy launched by a headless agent. Never blocks, never
+  // throws, never holds the process open — see `event-client.ts`.
+  //
+  // Opened BEFORE credentials are resolved, not after: token refresh and
+  // token expiry are auth events the pane must show, and both happen inside
+  // `resolveCredentials` below. A client created after them would be
+  // structurally unable to report the two auth outcomes a user can act on.
+  const events = createEventClient();
+
   // ── Credentials (env → file chain) ──────────────────────────
   // An expiring token is renewed in here rather than rejected; `onRefresh`
   // only surfaces what happened.
   const resolve = async () =>
     resolveCredentials(effective.env, {
       onRefresh: (outcome) => {
+        emitRefreshEvent(events, outcome);
         if (outcome.reason === 'refreshed') log(`Access token refreshed for env "${effective.env}".`);
         else if (outcome.reason === 'raced') log(`Another process refreshed env "${effective.env}"; using its token.`);
         else if (outcome.reason === 'failed')
@@ -328,14 +343,24 @@ async function runProxy(args: string[]): Promise<void> {
   // than firing once at startup and never again.
   setCredentialProvider(async () => {
     const env = currentCredentialEnv(effective.env);
-    const current = await resolveCredentials(env, {
-      onRefresh: (outcome) => {
-        if (outcome.reason === 'refreshed') log(`Access token refreshed for env "${env}".`);
-        else if (outcome.reason === 'raced') log(`Another process refreshed env "${env}"; using its token.`);
-        else if (outcome.reason === 'failed')
-          log(`Token refresh failed for env "${env}": ${outcome.error ?? 'unknown'}`);
-      },
-    });
+    let current;
+    try {
+      current = await resolveCredentials(env, {
+        onRefresh: (outcome) => {
+          emitRefreshEvent(events, outcome);
+          if (outcome.reason === 'refreshed') log(`Access token refreshed for env "${env}".`);
+          else if (outcome.reason === 'raced') log(`Another process refreshed env "${env}"; using its token.`);
+          else if (outcome.reason === 'failed')
+            log(`Token refresh failed for env "${env}": ${outcome.error ?? 'unknown'}`);
+        },
+      });
+    } catch (error: unknown) {
+      // Only the expiry refusal becomes a timeline row. "No credentials at
+      // all" and "the file is malformed" are configuration faults, not
+      // session events, and the pane is not a place to debug them.
+      if (isExpiredCredentialError(error)) emitExpiredEvent(events);
+      throw error;
+    }
     return { token: current.token, baseUrl: current.baseUrl };
   });
 
@@ -367,6 +392,7 @@ async function runProxy(args: string[]): Promise<void> {
 
   // ── Proxy: gateway client + stdio server ────────────────────
   const connectedProxy = await startProxy({
+    events,
     gatewayUrl,
     bearerToken: creds.token,
     registry,

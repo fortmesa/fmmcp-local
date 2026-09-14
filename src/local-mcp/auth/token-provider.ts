@@ -187,5 +187,25 @@ function assertNotExpired(token: string, env: string, source: string): void {
     ? `Your session has expired. Run \`fmmcp-local login ${env}\` (or use Sign In in the FortMesa sidebar).`
     : `Your ${env} access token has expired. Paste a new one in Settings › Identity › Advanced, or run \`fmmcp-local token set ${env}\`.`;
 
-  throw new Error(`The token for env "${env}" (${source}) ${when}. ${recovery}`);
+  throw new ExpiredCredentialError(`The token for env "${env}" (${source}) ${when}. ${recovery}`);
+}
+
+/**
+ * The failure `assertNotExpired` throws.
+ *
+ * A distinct type rather than a plain `Error`, because callers need to tell
+ * "your session ran out" apart from "there are no credentials at all" and
+ * from "the credentials file is malformed" — and the only other way to do
+ * that is to pattern-match the message, which is user-facing prose that gets
+ * reworded. The Event viewer's `auth.expired` row depends on this
+ * distinction (`local-mcp/auth-events.ts`); so would any future
+ * re-authentication prompt.
+ */
+export class ExpiredCredentialError extends Error {
+  override readonly name = 'ExpiredCredentialError';
+}
+
+/** True when `error` is the credential chain's "this token has expired" refusal. */
+export function isExpiredCredentialError(error: unknown): error is ExpiredCredentialError {
+  return error instanceof ExpiredCredentialError;
 }

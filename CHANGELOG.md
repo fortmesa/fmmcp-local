@@ -1,5 +1,127 @@
 # Changelog
 
+## [2026-09-14T17:01:25Z] Release: feat/MFDV-246-saferoom-0.8.0
+
+- User: Matthew Fisch + Claude Fable 5.1 (MFDV-246, MFDV-489, FMENG-3097)
+- Version: 0.8.0
+- Commit: (this commit)
+
+### What's New
+
+#### See what your agent is doing, while it does it
+
+Saferoom sits between your agent and FortMesa, and until now that was an opaque place. An agent
+would work for a minute and you had no way to tell whether it was reading controls, uploading a
+document, waiting on the gateway, or quietly failing on an expired token.
+
+The **Event viewer** is a live timeline of exactly that, at the top of the FortMesa sidebar. Every
+MCP tool call the local server handles appears the moment it starts and updates in place when it
+finishes:
+
+```
+●  documents · upload_url                    now
+✓  controls · read              84ms       now
+✕  documents · download    401 expired  1.2s   3m ago
+↻  auth · refresh                       12m ago
+```
+
+Both the local documents tools and calls relayed to the cloud gateway are included — they are hooked
+at the **single dispatch point** every call passes through, so a tool cannot be added later that
+quietly bypasses the timeline. Session events are there too: sign-in, sign-out, token refresh, token
+expiry, and gateway connect/disconnect/reconnect.
+
+The **expand icon** in the pane's title bar opens a fullscreen view in the editor area with the last
+200 events and two extra columns — which **scope** the call was made in, and whether it was served
+**locally** or **relayed** to the gateway. The sidebar keeps the most recent 30. Both stream live off
+the same buffer.
+
+#### What it deliberately does not show
+
+The timeline carries the **tool family and method, the scope, the outcome, and the duration**. It
+does not carry request or response payloads, file paths, document titles, email addresses, tokens,
+or raw error messages — and not because those are stripped before display. They are never collected.
+The summary is built by reading a fixed allowlist of fields off each call, so an argument nobody
+anticipated has no route into the pane even in principle. Failures are reduced to a closed set of
+classes (`401 expired`, `403 denied`, `4xx`, `5xx`, `timeout`, `network`, `blocked`) because a
+gateway error message can quote the request that produced it.
+
+**Nothing is persisted.** The buffer is a plain object in the extension host, built fresh on every
+activation. There is no file, no `globalState`, no cache. Reloading the window or closing the editor
+leaves nothing behind — the events the proxy sends travel over a local, owner-only socket that holds
+no data at rest, and if nothing is listening they are dropped rather than queued.
+
+There are no filters, no search, no export and no log stream today. The subscription seam a log
+stream would attach to (`EventBus.subscribe`) is in place, but turning this pane into a log viewer
+is a decision someone should make on purpose.
+
+#### Point Saferoom at the FortMesa that is yours
+
+Saferoom talks to FortMesa production out of the box, and until now that was the only thing it
+could talk to unless you hand-edited `config.json` — which nobody does. **Data region** now has an
+**Add server** button: name the server, give it a gateway URL, and select it like any other. A
+server you add yourself stays available in production builds, while a stale `next` or `latest`
+entry left behind by an older dev install is still refused.
+
+#### Your agent's tools stay put when the gateway blips
+
+The tool list used to be fetched from the gateway on every single request, so a momentary network
+problem meant your agent saw **no tools at all** rather than the ones it had a second earlier.
+Saferoom now keeps the last list it was given and serves that while a refresh is failing, and
+refreshes on a short cycle otherwise. Switching environment, scope, or sign-in still throws the
+list away immediately, so the tools you can see always match the account and gateway you are
+actually pointed at.
+
+#### Uploads keep the name you give them
+
+Uploading a document used to store it under whatever the file happened to be called on your disk.
+Pass a `fileName` and Saferoom now stores it under that name — which also decides whether the
+upload becomes a new document or a new version of an existing one, since the server de-duplicates
+by stored filename. Omit it and nothing changes: the local basename is still used.
+
+### Developer Notes
+
+- **New**: `src/registry/events/**` (`event-bus`, `event-record`, `event-row`, `event-sink`,
+  `summarize`, `transport`), `src/local-mcp/{event-client,tool-events,auth-events}.ts`,
+  `src/extension/events-view.ts` — the Event viewer, hooked at the single dispatch point in
+  `proxy.ts` so no future tool can bypass the timeline.
+- **New**: `src/local-mcp/tool-schema-cache.ts` — TTL cache over `tools/list` with
+  serve-last-good-on-failure, a `_meta` (`fortmesa/schemaExpiresAt`) gateway-published expiry
+  override, and single-flight collapse of concurrent misses. Invalidated by `proxy.ts` `reload()`.
+  This is what makes deriving schemas from the gateway (FMENG-3097) affordable — the extension no
+  longer carries its own copies, which used to freeze on the day the VSIX shipped.
+- **New**: `src/registry/custom-servers.ts` — user-added environments as `custom: true` entries in
+  the `environments` map; the marker is what lets a prod-only build accept a deliberately added
+  server while still refusing a leftover `next`. `vscode`-free and unit-tested.
+- **Changed**: `src/local-mcp/tools/documents.ts` — `fileName` now overrides the local basename on
+  local upload (MFDV-489), with a plain-name guard rejecting `/` and `\`; default behaviour
+  unchanged. `src/shared/scope-lock.ts` gained a read-only `nameFor()` used by event summarisation
+  (no enforcement change). `.github/workflows/release.yml` and `bitbucket-pipelines.yml` now build
+  and publish the GitHub release artifacts.
+- **Docs**: `README.md` rewritten for its audience in the "What's New" voice (PO ruling
+  2026-09-13) and corrected where the schema cache and custom servers made the old text untrue;
+  `AGENTS.md` § "README authoring standard" and `.agent/DECISIONS.md` D020 make that permanent;
+  new `docs/DOCUMENTS-ARCHITECTURE.md`.
+- **Gates**: `yarn test` (format check + `eslint --max-warnings 0` + unit) — **719 tests, 719
+  pass, 0 fail** (584 at 0.7.9). `yarn install --immutable` clean. `yarn npm audit` — **0 CVEs**.
+  Adversarial regression pass vs milestone baseline `57a321e` (v0.7.9): 25 commits, no test file
+  deleted, boundary files (`scope-lock`, `documents`, `proxy`, `package-prod`) reviewed —
+  **0 confirmed regressions**.
+
+### Known gaps
+
+- The Event viewer has **no filters, no search, no export and no log stream**. The subscription
+  seam (`EventBus.subscribe`) exists; turning the pane into a log viewer is a deliberate decision
+  nobody has made yet.
+- The schema cache introduces a **staleness window**: a tool added or changed on the gateway can
+  take up to the TTL (5 minutes by default, or whatever expiry the gateway publishes) to appear,
+  unless something triggers a reload first.
+- **No live OAuth round-trip** was performed for this release; sign-in paths are covered by unit
+  tests only (carried forward from 0.7.x — unchanged).
+- The `.mcpb` and `.tgz` artifacts are built and verified locally but **distribution channel
+  selection is still open** — see `DISTRIBUTION.md`.
+- OAuth tokens still live in `~/.fmcode/credentials.json` (`0600`) rather than VS Code
+  SecretStorage (MFDV-480, unchanged).
+
 ## [2026-09-10T18:36:33Z] Unreleased-for-review: 0.7.9 — identity card trim; documents tools mode switch
 
 - User: Matthew Fisch + Claude Fable 5.1 (VSIX round 7, PO feedback 2026-09-10)

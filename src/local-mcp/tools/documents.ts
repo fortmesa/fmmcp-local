@@ -290,8 +290,11 @@ export function registerDocumentTools(server: ToolRegistrar, getLock: () => Scop
         '"upload_status" exist so this tool matches the hosted gateway, which has no filesystem: they hand ' +
         'back a presigned S3 URL for the CALLER to PUT to, then a completion signal to poll. Reach for them ' +
         'only when the bytes are not on this machine.' +
-        '\n\nUPLOAD IS NOT ALWAYS A NEW DOCUMENT: the server de-duplicates by filename, so uploading a ' +
-        'file whose same filename in the same scope adds a version to the existing document ' +
+        '\n\nUPLOAD stores the file under filePath\'s local basename by default; pass "fileName" to store ' +
+        'it under a different name instead (both the returned "title" and the server-side gridfsFileName ' +
+        'follow "fileName" when given). Must be a plain file name, not a path.' +
+        '\n\nUPLOAD IS NOT ALWAYS A NEW DOCUMENT: the server de-duplicates by (stored) filename, so uploading ' +
+        'under the same filename in the same scope adds a version to the existing document ' +
         'rather than creating a second one — the response carries the SAME "id" as the first upload and ' +
         '"versionCount" increases. There is no way to force a second document with the same filename; ' +
         'upload under a different filename if you need a separate record. Maximum file size is 50 MB.' +
@@ -313,7 +316,15 @@ export function registerDocumentTools(server: ToolRegistrar, getLock: () => Scop
         scopeId: z.string().min(1).describe('Security scope ID'),
         documentId: z.string().min(1).optional().describe('Document ID (required for update and upload_status)'),
         filePath: z.string().optional().describe('Local file path to upload (required for upload)'),
-        fileName: z.string().min(1).optional().describe('Name to store the file under (required for upload_url)'),
+        fileName: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            'Name to store the file under (required for upload_url; optional for upload — when supplied, ' +
+              "overrides the local file's basename as the stored title/gridfsFileName; falls back to the " +
+              'basename when omitted). Must be a plain file name, not a path.',
+          ),
         contentLength: z
           .number()
           .optional()
@@ -357,7 +368,20 @@ export function registerDocumentTools(server: ToolRegistrar, getLock: () => Scop
         // `method` is narrowed to 'upload' by the relay guard above.
         requireParam('filePath', filePath);
         const fileBuffer = await readFile(filePath);
-        const uploadFileName = basename(filePath);
+
+        // Honour a caller-supplied `fileName` — the multipart field's filename is what
+        // fmweb-be stores as `originalname` (document.service.ts:847), so this is the ONE
+        // place that decides the stored title/gridfsFileName. Falls back to the local
+        // basename when omitted, matching the gateway's upload_url path (documents.ts:275),
+        // which also treats fileName as a plain stored name, not a path.
+        // (non-empty is already enforced by the schema's z.string().min(1))
+        let uploadFileName = basename(filePath);
+        if (fileName !== undefined) {
+          if (fileName.includes('/') || fileName.includes('\\')) {
+            return toolError(`"fileName" must be a plain file name, not a path: "${fileName}"`);
+          }
+          uploadFileName = fileName;
+        }
 
         // Build multipart form data
         const formData = new FormData();

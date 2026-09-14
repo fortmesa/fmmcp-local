@@ -34,6 +34,10 @@ import { registerIdeSyncCommands, runSyncPass } from './ide-sync-commands.js';
 import { IdentityViewProvider } from './identity-view.js';
 import { registerLoginCommand } from './login-command.js';
 import { createLogger, errorMessage } from './logger.js';
+import { EventBus } from '../registry/events/event-bus.js';
+import { newEventId } from '../registry/events/event-record.js';
+import { startEventSink } from '../registry/events/event-sink.js';
+import { EventsViewProvider, registerEventViewerCommand } from './events-view.js';
 import { registerMcpProvider, type ServerSpec } from './mcp-provider.js';
 import { registerSaferoomLauncherCommands } from './saferoom-launcher.js';
 import { refreshScopeSelectionIfOpen } from './scope-select-panel.js';
@@ -171,6 +175,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(scopesTreeProvider);
   context.subscriptions.push(vscode.window.createTreeView('fortmesa.scopes', { treeDataProvider: scopesTreeProvider }));
 
+  // ── Event viewer (MFDV-246) ────────────────────────────────
+  // The buffer is constructed HERE, per activation, and nowhere else. That is
+  // what makes "this IDE load only" true: a window reload builds a new empty
+  // bus and the previous timeline is gone, because it never existed anywhere
+  // but in this object. Do not move it to `globalState` or a file.
+  const eventBus = new EventBus();
+  context.subscriptions.push({
+    dispose: () => {
+      eventBus.dispose();
+    },
+  });
+  // The proxy runs in its own process (VS Code spawns `launch-mcp.sh`), so its
+  // events arrive over a local socket rather than by function call. Failing to
+  // bind degrades the pane to this window's own events; it never fails
+  // activation. See `event-sink.ts`.
+  context.subscriptions.push(startEventSink(eventBus, log));
+  registerEventViewerCommand(context, eventBus, log);
+
+  const eventsViewProvider = new EventsViewProvider(eventBus, log);
+  context.subscriptions.push(eventsViewProvider);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider('fortmesa.events', eventsViewProvider, {
+      webviewOptions: { retainContextWhenHidden: true },
+    }),
+  );
+
   // "Signed-in user" is a WebviewView, not a TreeView (2026-09-03): its
   // inline sign-out confirmation and its inline expired-session prompt are
   // not expressible as tree items. (Its advanced access-token control moved
@@ -226,6 +256,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     onIdentityChanged((change) => {
       log.info(`identity changed for "${change.env}" (${change.kind}) — refreshing every Saferoom surface`);
+      // The auth half of the timeline is produced HERE, not by the proxy: the
+      // sign-in/sign-out flows run in the extension host, so they publish
+      // straight into the bus with no wire involved. `change.env` is a
+      // configured environment name (`prod`, `sandbox`), never a credential —
+      // and it is dropped rather than rendered, because the pane's subject is
+      // the action, not which environment it happened in.
+      eventBus.publish({
+        id: newEventId(),
+        ts: Date.now(),
+        kind: change.kind === 'signed-out' ? 'auth.signout' : 'auth.signin',
+        family: 'auth',
+        method: change.kind === 'signed-out' ? 'sign_out' : 'sign_in',
+        outcome: 'ok',
+      });
       refreshAllTrees();
       // The status bar's "Not signed-in" state is credentials.json-derived
       // and this event fires exactly when that file changed — config.json
