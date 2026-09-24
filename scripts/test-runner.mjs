@@ -25,6 +25,7 @@ import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { normalizeListPlansResult } from './lib/list-plans-shape.mjs';
 
 // ── Environment (CLI: --env sandbox|next, default sandbox) ──
 const ENV = process.argv.includes('--env') ? process.argv[process.argv.indexOf('--env') + 1] : 'sandbox';
@@ -229,8 +230,12 @@ async function run() {
   await test(client, 3, 'scopes.list_users', 'grc_scopes', { method: 'list_users', scopeId: SCOPE_ID });
 
   // grc_plans
-  const plans = await test(client, 4, 'plans.list_plans', 'grc_plans', { method: 'list_plans', scopeId: SCOPE_ID });
-  if (plans && Array.isArray(plans) && plans.length > 0) {
+  const plansResult = await test(client, 4, 'plans.list_plans', 'grc_plans', {
+    method: 'list_plans',
+    scopeId: SCOPE_ID,
+  });
+  const plans = normalizeListPlansResult(plansResult);
+  if (plans && plans.length > 0) {
     state.planId = plans[0]._id || plans[0].id;
     state.profileId = plans[0].controlProfileId || plans[0].profileId;
   }

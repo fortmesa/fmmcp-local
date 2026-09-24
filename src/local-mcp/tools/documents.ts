@@ -94,8 +94,10 @@ export function registerDocumentTools(server: ToolRegistrar, getLock: () => Scop
         'document. Only "get" returns them, under "fileVersions", newest first; "list" omits them. Pass a ' +
         'version\'s "_id" as versionId to "download" or "download_url" to fetch that specific version. ' +
         '"length" on a version is the size of the file as uploaded, not the stored byte count.' +
-        '\n\nPREFER "download", which writes the file to filePath. "download_url" returns a short-lived ' +
-        'presigned URL instead, and exists so this tool matches the hosted gateway.' +
+        '\n\nPREFER "download", which writes the file to filePath. "download_url" returns a URL instead, ' +
+        'and exists so this tool matches the hosted gateway. That URL is served by the FortMesa MCP gateway ' +
+        'files proxy (https://mcp.fortmesa.com/files/…), signed for 60 minutes, and GET-able with your normal ' +
+        'fetch tool / HTTP client — no S3 access needed.' +
         '\n\nReturns JSON. The API does NOT expose a generation "status" or a "fileSize" on any of these ' +
         'methods — do not branch on either; readiness is indicated by preSignedUrl/gridfsFileName being non-empty. ' +
         'list: [{ "id": "...", "title": "...", "documentType": "...", "documentFormat": "...", "createdAt": "..." }] ' +
@@ -288,8 +290,10 @@ export function registerDocumentTools(server: ToolRegistrar, getLock: () => Scop
         'Use grc_documents_read to list or download documents. Use grc_documents_delete to permanently remove.' +
         '\n\nPREFER "upload". It takes a local filePath and moves the bytes for you. "upload_url" and ' +
         '"upload_status" exist so this tool matches the hosted gateway, which has no filesystem: they hand ' +
-        'back a presigned S3 URL for the CALLER to PUT to, then a completion signal to poll. Reach for them ' +
-        'only when the bytes are not on this machine.' +
+        'back an upload URL for the CALLER to PUT to, then a completion signal to poll. That URL is served by ' +
+        'the FortMesa MCP gateway files proxy (https://mcp.fortmesa.com/files/…) and is reachable with your ' +
+        'normal HTTP client — no S3 access needed — and is time-limited, with its own "expiresAt". Reach for ' +
+        'them only when the bytes are not on this machine.' +
         '\n\nUPLOAD stores the file under filePath\'s local basename by default; pass "fileName" to store ' +
         'it under a different name instead (both the returned "title" and the server-side gridfsFileName ' +
         'follow "fileName" when given). Must be a plain file name, not a path.' +

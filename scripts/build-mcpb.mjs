@@ -22,7 +22,7 @@
  * Usage: node scripts/build-mcpb.mjs [--out <path>]
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -77,20 +77,31 @@ function buildManifest() {
      * `~/.fmcode/credentials.json`, and carry on. The refresh token stored
      * with it keeps the session alive without asking again.
      *
-     * That leaves the environment as the only thing worth asking a user.
+     * That leaves ONE optional question: which data region.
+     *
+     * There used to be two fields, an "Environment" string and an "API Base
+     * URL". Both were wrong for this audience. MCPB user_config has no
+     * enumerated type, so "Environment" rendered as a free-text box in which
+     * anything but the word `prod` produced a server that could not start —
+     * and it asked a customer to name an internal deployment tier. Production
+     * is now passed literally in `args` below and is not a question at all.
+     *
+     * What remains is the one thing a customer can legitimately be told by
+     * support: a different data region. It is a single optional URL, blank
+     * meaning production NA-US, and it replaces the whole environment rather
+     * than patching a base URL onto production's gateway and OAuth identity
+     * (see `registry/environments.ts#deriveDataRegion`).
      */
     user_config: {
-      environment: {
+      data_region_url: {
         type: 'string',
-        title: 'Environment',
-        description: 'Which FortMesa environment to connect to. Sign-in opens in your browser on first use.',
-        default: 'prod',
-        required: true,
-      },
-      api_base: {
-        type: 'string',
-        title: 'API Base URL (optional)',
-        description: 'Only for a custom deployment. Leave blank to use the selected environment default.',
+        title: 'Data region override URL (optional)',
+        // KEEP THIS SHORT. Claude Desktop echoes the description as the field's
+        // PLACEHOLDER, so anything long is truncated mid-sentence and the user
+        // never reads the end of it (PO, 2026-09-18).
+        description:
+          'Connects to FortMesa Production (US) by default. Enter a custom data region URL only if ' +
+          'FortMesa support gave you one.',
         default: '',
         required: false,
       },
@@ -103,15 +114,19 @@ function buildManifest() {
         // `--env` reaches the proxy the same way it does from a shell. The
         // token goes through the environment instead of argv so it never
         // appears in a process listing.
-        args: [`\${__dirname}/${ENTRY_IN_BUNDLE}`, '--env', '\${user_config.environment}'],
+        args: [`\${__dirname}/${ENTRY_IN_BUNDLE}`, '--env', 'prod'],
         env: {
           // Turns on the browser sign-in described above. Set ONLY here: a
           // proxy started from a shell or an IDE must never pop a browser on
           // its own.
           FMCODE_AUTO_LOGIN: 'true',
-          // Blank is ignored by resolveCredentials, which then falls back to
-          // the selected environment's own base.
-          FORTMESA_API_BASE: '\${user_config.api_base}',
+          // Blank (the default) means production NA-US and is ignored. A
+          // non-blank value REPLACES the `--env prod` above with the derived
+          // region — gateway, API base, OAuth identity and credentials key
+          // together. NOT FORTMESA_API_BASE: that variable is one half of the
+          // paste-a-token credential chain and is inert without
+          // FORTMESA_API_TOKEN, which a bundle never sets.
+          FORTMESA_DATA_REGION: '\${user_config.data_region_url}',
         },
       },
     },
@@ -130,20 +145,33 @@ function buildManifest() {
  * on a real install with "No credentials available for env sandbox". A smoke
  * test that cannot fail the way the product fails is not a smoke test.
  *
- * Two runs, because they catch different breakage:
+ * Five runs, because they catch different breakage:
  *
- *   1. NO credentials. Must fail, and must fail on credentials. This is the
- *      exact shape of the shipped bug.
+ *   1. NO credentials and no auto-login. Must fail, and must fail on
+ *      credentials. This is the shape of the first shipped bug.
  *   2. WITH a token and `--env prod`, pointed at a closed port. Must get PAST
  *      credential resolution and die trying to reach the gateway. That proves
  *      config bootstrap, environment selection, API-base resolution and the
  *      env-var credential branch all work on a machine with no `~/.fmcode`,
  *      which is every MCPB install.
+ *   3. THE MANIFEST'S OWN LAUNCH — auto-login, no credentials, nothing on the
+ *      command line the manifest does not pass — speaking real MCP on stdin.
+ *      It must ANSWER `initialize`. The previous version of this run asserted
+ *      only that sign-in STARTED and that stdout was empty, and an empty
+ *      stdout is exactly what a server that never answers produces: the run
+ *      passed while a default Claude Desktop install showed "Unable to connect
+ *      to extension server", because startup awaited a browser sign-in before
+ *      connecting the transport. A smoke test that cannot fail the way the
+ *      product fails is not a smoke test.
+ *   4. A data region override. Must re-point the gateway and keep serving.
+ *   5. A REJECTED data region override. Must still answer `initialize` (so the
+ *      host has a server that can explain itself) and must NOT quietly fall
+ *      back to production.
  *
- * Run 2 deliberately stops at the network boundary. Going further would mean
+ * Runs 2-5 deliberately stop at the network boundary. Going further would mean
  * a real gateway, and a build must not depend on one.
  */
-function smokeTest(entries) {
+async function smokeTest(entries) {
   const scratch = mkdtempSync(join(tmpdir(), 'fortmesa-mcpb-smoke-'));
   try {
     for (const entry of entries) {
@@ -195,38 +223,136 @@ function smokeTest(entries) {
       process.exit(1);
     }
 
-    // The path the manifest actually uses. No browser (FMCODE_NO_BROWSER) and
-    // a short window (FMCODE_LOGIN_TIMEOUT_MS), so a build neither opens a
+    /**
+     * Start the server the way an MCPB HOST does — spawn it, then speak MCP on
+     * stdin — and return once `initialize` has been answered or the wait runs
+     * out. Async on purpose: the fixed server no longer exits on its own, which
+     * is the whole point, so `spawnSync` would simply block.
+     */
+    const serveAsHost = (args, extraEnv, waitMs = 20_000) =>
+      new Promise((resolveRun) => {
+        const child = spawn(process.execPath, [server, ...args], {
+          env: { ...process.env, FMCODE_DIR: mkdtempSync(join(scratch, 'home-')), ...extraEnv },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf-8');
+        child.stderr.setEncoding('utf-8');
+        child.stdout.on('data', (d) => (stdout += d));
+        child.stderr.on('data', (d) => (stderr += d));
+        child.stdin.write(initialize);
+        const finish = () => {
+          clearTimeout(deadline);
+          clearInterval(poll);
+          child.kill('SIGKILL');
+          resolveRun({ stdout, stderr });
+        };
+        const poll = setInterval(() => {
+          if (stdout.includes('"id":1')) finish();
+        }, 100);
+        const deadline = setTimeout(finish, waitMs);
+        child.on('error', finish);
+      });
+
+    /** Every line on stdout must be a JSON-RPC message; one log line corrupts the stream. */
+    const stdoutIsClean = (stdout) =>
+      stdout
+        .split('\n')
+        .filter((line) => line.trim() !== '')
+        .every((line) => {
+          try {
+            return JSON.parse(line).jsonrpc === '2.0';
+          } catch {
+            return false;
+          }
+        });
+
+    const fail = (message, run) => {
+      console.error(`build-mcpb: FATAL: ${message}`);
+      console.error(`  stdout: ${run.stdout.slice(0, 400)}`);
+      console.error(`  stderr: ${run.stderr.slice(-800)}`);
+      process.exit(1);
+    };
+
+    // 3. The manifest's own launch. No browser (FMCODE_NO_BROWSER) and a short
+    // sign-in window (FMCODE_LOGIN_TIMEOUT_MS), so a build neither opens a
     // window nor waits out the real redirect timeout.
-    const autoLogin = start(['--env', 'prod', '--gateway', 'http://127.0.0.1:1/mcp'], {
+    const hostRun = await serveAsHost(['--env', 'prod'], {
       FORTMESA_API_TOKEN: '',
       FMCODE_AUTO_LOGIN: 'true',
       FMCODE_NO_BROWSER: 'true',
       FMCODE_LOGIN_TIMEOUT_MS: '2000',
+      FORTMESA_DATA_REGION: '',
     });
-    const autoStderr = `${autoLogin.stderr}`;
 
-    if (!autoStderr.includes('Starting browser sign-in')) {
-      console.error('build-mcpb: FATAL: FMCODE_AUTO_LOGIN did not start the CIMD sign-in.');
-      console.error('  The manifest relies on this: an MCPB install has no terminal and no Saferoom UI,');
-      console.error('  so browser sign-in is the ONLY way a bundled server ever gets credentials.');
-      console.error(`  stderr: ${autoStderr.slice(0, 400)}`);
-      process.exit(1);
+    if (!hostRun.stdout.includes('"id":1')) {
+      fail(
+        "the manifest's own launch never answered initialize — this is what an installing user sees as\n" +
+          '  "Unable to connect to extension server". A first install has NO credentials, so nothing on the\n' +
+          '  startup path may block on obtaining them before the stdio transport is connected.',
+        hostRun,
+      );
     }
-    if (!/Sign-in URL: https?:\/\//.test(autoStderr)) {
-      console.error('build-mcpb: FATAL: the sign-in URL never reached stderr.');
-      console.error("  With no browser and no terminal, that log line is the user's only route to it.");
-      console.error(`  stderr: ${autoStderr.slice(0, 400)}`);
-      process.exit(1);
+    if (!hostRun.stderr.includes('Starting browser sign-in')) {
+      fail(
+        'FMCODE_AUTO_LOGIN did not start the CIMD sign-in. An MCPB install has no terminal and no\n' +
+          '  Saferoom UI, so browser sign-in is the ONLY way a bundled server ever gets credentials.',
+        hostRun,
+      );
     }
-    if (autoLogin.stdout.trim() !== '') {
-      console.error('build-mcpb: FATAL: the sign-in path wrote to STDOUT, which is the JSON-RPC channel.');
-      console.error('  Any byte here corrupts the stream and the host drops the server.');
-      console.error(`  stdout: ${autoLogin.stdout.slice(0, 400)}`);
-      process.exit(1);
+    if (!/Sign-in URL: https?:\/\//.test(hostRun.stderr)) {
+      fail(
+        "the sign-in URL never reached stderr — with no browser, that log line is the user's only route to it.",
+        hostRun,
+      );
+    }
+    if (!stdoutIsClean(hostRun.stdout)) {
+      fail(
+        'something that is not JSON-RPC reached STDOUT. Any such byte corrupts the stream and the host drops the server.',
+        hostRun,
+      );
     }
 
-    console.log('build-mcpb: smoke test OK (env credentials work; CIMD sign-in starts; stdout stays clean)');
+    // 4. Data region override: one URL has to move the gateway too, not just an
+    // API base (registry/environments.ts#deriveDataRegion).
+    const regionRun = await serveAsHost(['--env', 'prod'], {
+      FORTMESA_API_TOKEN: '',
+      FMCODE_AUTO_LOGIN: 'true',
+      FMCODE_NO_BROWSER: 'true',
+      FMCODE_LOGIN_TIMEOUT_MS: '2000',
+      FORTMESA_DATA_REGION: 'https://api.smoke-test.example.com',
+    });
+    if (!regionRun.stdout.includes('"id":1'))
+      fail('a data region override stopped the server from answering initialize.', regionRun);
+    if (!regionRun.stderr.includes('https://mcp.smoke-test.example.com/mcp')) {
+      fail(
+        'a data region override did not re-point the GATEWAY — it would have kept talking to production.',
+        regionRun,
+      );
+    }
+
+    // 5. A rejected override must not become production.
+    const badRegionRun = await serveAsHost(['--env', 'prod'], {
+      FORTMESA_API_TOKEN: '',
+      FMCODE_AUTO_LOGIN: 'true',
+      FMCODE_NO_BROWSER: 'true',
+      FORTMESA_DATA_REGION: 'ftp://nope',
+    });
+    if (!badRegionRun.stdout.includes('"id":1')) {
+      fail('a rejected data region killed the server instead of leaving one that can explain itself.', badRegionRun);
+    }
+    if (!badRegionRun.stderr.includes('FortMesa is not configured')) {
+      fail('a rejected data region was not reported as such.', badRegionRun);
+    }
+    if (badRegionRun.stderr.includes('Starting browser sign-in')) {
+      fail('a rejected data region still started a sign-in — it must not fall back to production.', badRegionRun);
+    }
+
+    console.log(
+      'build-mcpb: smoke test OK (env credentials work; the manifest launch answers initialize while ' +
+        'signing in; data region override re-points the gateway; a bad one refuses instead of falling back)',
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -280,7 +406,7 @@ if (!names.has(manifest.icon)) {
 
 const archive = writeZip(entries);
 writeFileSync(outPath, archive);
-smokeTest(entries);
+await smokeTest(entries);
 
 console.log(`build-mcpb: wrote ${outPath}`);
 for (const entry of entries) console.log(`  ${entry.name.padEnd(20)} ${String(entry.data.length).padStart(9)} bytes`);

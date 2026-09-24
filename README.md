@@ -89,6 +89,22 @@ In**. Sign-in is OAuth 2.0 with PKCE against FortMesa's identity provider, and
 your token is written to `~/.fmcode/credentials.json` with `0600` permissions
 and never leaves the machine.
 
+**Installing the bundle asks one optional question.** Claude Desktop shows a
+single field, _Data region override URL_. Leave it blank and Saferoom connects
+to FortMesa Production (US) — which is what nearly everyone wants. Enter a
+custom data region URL only if FortMesa support gave you one, and give the one
+they named: it moves the gateway, the API, the sign-in identity and where your
+credentials are stored, together. An address that is not a FortMesa data region
+is refused rather than quietly treated as production, and Saferoom will tell
+your agent so.
+
+**The bundle signs you in on first use, without keeping your agent waiting.**
+A fresh install has no credentials, so the first launch opens your browser to
+sign in. Saferoom is answering your agent before that window appears: its own
+document tools are available immediately, and anything that needs FortMesa
+replies "sign-in has not finished yet" until you have finished in the browser —
+at which point the full tool list arrives on its own, with nothing to restart.
+
 ## Settings
 
 Every `fortmesa.*` VS Code setting has a matching `config.json` key. Edit either

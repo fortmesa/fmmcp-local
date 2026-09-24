@@ -225,6 +225,88 @@ export function requireSecureApiBase(base: string): string {
   );
 }
 
+/**
+ * Turn a support-supplied data region URL into a full environment entry, and
+ * register it so everything keyed by environment name — the gateway, the
+ * credential block, the cached scopeMap, the OAuth client identity — lines up
+ * behind one key.
+ *
+ * WHY A SYNTHETIC ENTRY AND NOT JUST AN API BASE. The MCPB used to expose the
+ * raw `FORTMESA_API_BASE` knob, and a bare API base cannot carry a data
+ * region on its own:
+ *   - the GATEWAY is resolved from the environment entry, so an API-base
+ *     override left the proxy talking to the production gateway while the
+ *     local documents tools talked to the other region;
+ *   - `FORTMESA_API_BASE` is only consulted on the `FORTMESA_API_TOKEN`
+ *     branch of the credential chain (`auth/token-provider.ts`), and the
+ *     MCPB sets no token, so it was inert on exactly the path that ships;
+ *   - sign-in derives its `resource` indicator and its `client_id` from the
+ *     environment entry, so the override never reached the OAuth request; and
+ *   - credentials are keyed by environment NAME, so two regions would have
+ *     written over each other under the key `prod`.
+ *
+ * THE DERIVATION, and why it is allowed to be a convention. Production is
+ * `api.fortmesa.com` / `mcp.fortmesa.com` / `fortmesa.com`, with the CIMD
+ * document and the hosted callback both on the bare domain. A data region is
+ * production in another place, so the same three-host shape is assumed and
+ * NOTHING else is guessed: an input that is not `https://api.<domain>` is
+ * REFUSED with an explanation rather than resolved by some looser rule. A
+ * wrong guess here would send a bearer token to a host the user never named.
+ */
+export function deriveDataRegion(input: string): { name: string; entry: EnvironmentEntry } {
+  const base = requireSecureApiBase(input).replace(/\/+$/, '');
+  const url = new URL(base);
+
+  if (url.pathname !== '/' && url.pathname !== '') {
+    throw new Error(
+      `Data region URL "${input}" must be a bare host such as https://api.example.fortmesa.com — ` +
+        `drop the path ("${url.pathname}").`,
+    );
+  }
+  if (!url.hostname.startsWith('api.')) {
+    throw new Error(
+      `Data region URL "${input}" is not a FortMesa data region address: it must start with ` +
+        '"api." (for example https://api.example.fortmesa.com). Check the address with your FortMesa ' +
+        'support representative.',
+    );
+  }
+
+  const domain = url.hostname.slice('api.'.length);
+  const api = `${url.protocol}//${url.host}`;
+
+  // Someone who types production's own address gets production, not a second
+  // identity for it under a different key.
+  const shipped = Object.entries(ENVIRONMENTS).find(([, entry]) => entry.api === api);
+  if (shipped !== undefined) return { name: shipped[0], entry: shipped[1] };
+
+  return {
+    name: `region-${url.hostname}`,
+    entry: {
+      gateway: `https://mcp.${domain}/mcp`,
+      app: `https://${domain}/`,
+      label: `Data region (${domain})`,
+      advanced: true,
+      api,
+      clientId: `https://${domain}/oauth/saferoom-client-metadata.json`,
+      hostedCallback: `https://${domain}/a/auth/saferoom/callback`,
+      // firstLandPage stays absent: whether that region's app routes
+      // auth/saferoom/start is a per-deploy fact we cannot know from here,
+      // and claiming it wrongly lands the user on a shell with no way forward.
+    },
+  };
+}
+
+/**
+ * Register a derived data region in {@link ENVIRONMENTS} so every lookup keyed
+ * by environment name resolves it, and return its key. Idempotent, and a
+ * no-op for a region that resolves to an environment this build already ships.
+ */
+export function registerDataRegion(input: string): { name: string; entry: EnvironmentEntry } {
+  const derived = deriveDataRegion(input);
+  ENVIRONMENTS[derived.name] = derived.entry;
+  return derived;
+}
+
 /** True when `env` is the FortMesa production environment. */
 export function isProdEnv(env: string): boolean {
   return env === DEFAULT_ENV;

@@ -17,7 +17,7 @@ import { createEventClient } from './event-client.js';
 import { emitExpiredEvent, emitRefreshEvent } from './auth-events.js';
 import type { ConnectedProxy } from './proxy.js';
 import { loadConfig, resolveEffectiveStartup, saveConfig, watchConfig } from '../registry/config.js';
-import { prodWarning } from '../registry/environments.js';
+import { prodWarning, registerDataRegion } from '../registry/environments.js';
 import type { Config, StartupFlags } from '../registry/config.js';
 import { readCredentialsSummary, writeToken } from '../registry/credentials.js';
 import { ENVIRONMENTS } from '../registry/environments.js';
@@ -282,10 +282,35 @@ async function runProxy(args: string[]): Promise<void> {
   const scopeLockFlagPresent = args.includes('--scope-lock');
   const scopeLockNamesFlag = scopeLockFlagPresent ? parseScopeLockArg(args) : undefined;
 
+  // A data region override (the MCPB's single user_config field) REPLACES the
+  // environment rather than patching an API base onto production's: gateway,
+  // API base, OAuth identity and the credentials key all have to move together
+  // or they describe two different places at once. See
+  // `registry/environments.ts#deriveDataRegion` for why a bare base URL cannot
+  // do this. An explicit --gateway still wins; nothing else does.
+  const dataRegion = process.env.FORTMESA_DATA_REGION?.trim();
+  let regionFlags: StartupFlags = {};
+  // A rejected override must NOT fall back to production — the user named
+  // somewhere else. Serve stdio and refuse every call with the reason instead
+  // (same mechanism as the pending sign-in below), so the host shows a
+  // connected server that can explain itself rather than one that just died.
+  let regionError: string | undefined;
+  if (dataRegion !== undefined && dataRegion !== '') {
+    try {
+      const region = registerDataRegion(dataRegion);
+      log(`Data region: ${region.entry.label} — env "${region.name}", gateway ${region.entry.gateway}`);
+      regionFlags = { env: region.name, ...(gatewayFlag === undefined ? { gateway: region.entry.gateway } : {}) };
+    } catch (error) {
+      regionError = `FortMesa is not configured: ${errorMessage(error)}`;
+      log(regionError);
+    }
+  }
+
   const flags: StartupFlags = {
     ...(envFlag !== undefined ? { env: envFlag } : {}),
     ...(gatewayFlag !== undefined ? { gateway: gatewayFlag } : {}),
     ...(scopeLockNamesFlag !== undefined ? { scopeLockNames: scopeLockNamesFlag } : {}),
+    ...regionFlags,
   };
 
   const loadedConfig = await loadConfig();
@@ -323,18 +348,29 @@ async function runProxy(args: string[]): Promise<void> {
       },
     });
 
-  let creds;
-  try {
-    creds = await resolve();
-  } catch (error) {
-    // A bundled server has no terminal and no Saferoom UI, so this is its only
-    // way to obtain credentials. Off unless FMCODE_AUTO_LOGIN says otherwise,
-    // and the original error is rethrown when sign-in is unavailable or fails,
-    // so no caller loses the real reason.
-    if (!(await autoLoginIfEnabled(effective.env))) throw error;
-    creds = await resolve();
+  // `undefined` means: no credentials yet, and a background sign-in is about
+  // to run. See SIGN_IN_PENDING and ProxyOptions.pendingReason — the server
+  // MUST reach `mcp.connect(stdio)` promptly, because the host that spawned it
+  // is already waiting on `initialize`, and a browser sign-in takes as long as
+  // a human takes. Awaiting the sign-in here is what made a default Claude
+  // Desktop install report "Unable to connect to extension server".
+  let creds: Awaited<ReturnType<typeof resolve>> | undefined;
+  let signInPending = false;
+  if (regionError === undefined) {
+    try {
+      creds = await resolve();
+      log(`Credentials resolved (env: ${effective.env}, source: ${creds.source}, base: ${creds.baseUrl})`);
+    } catch (error) {
+      // A bundled server has no terminal and no Saferoom UI, so browser sign-in
+      // is its only way to obtain credentials. Off unless FMCODE_AUTO_LOGIN says
+      // otherwise, and the original error is rethrown when sign-in is
+      // unavailable, so no caller loses the real reason.
+      if (!autoLoginAvailable(effective.env)) throw error;
+      signInPending = true;
+      log(`No stored credentials for env "${effective.env}" — serving stdio now and signing in in the background.`);
+    }
   }
-  log(`Credentials resolved (env: ${effective.env}, source: ${creds.source}, base: ${creds.baseUrl})`);
+  const pendingReason = regionError ?? (signInPending ? SIGN_IN_PENDING : undefined);
 
   // A provider, not a captured token. The proxy outlives its credentials: a
   // token good at boot expires later, and a `login` run while this process is
@@ -370,14 +406,26 @@ async function runProxy(args: string[]): Promise<void> {
   // Only when a requested name is missing from that cache do we pay for a
   // live gateway connection to resolve + cache it; that same connection is
   // then handed straight to startProxy below instead of connecting twice.
-  const { lock, authorizedScopes, connectedClient } = await resolveLock(
-    effective.scopeLockNames,
-    effective.scopeLocked,
-    effective.env,
-    creds.scopeMap,
-    gatewayUrl,
-    creds.token,
-  );
+  //
+  // With no credentials yet there is nothing to resolve names against and no
+  // token to resolve them WITH, so a configured lock starts fail-closed (the
+  // same state `resolveLock` produces for "locked, nothing selected") and the
+  // post-sign-in reload below resolves it for real.
+  const { lock, authorizedScopes, connectedClient } =
+    creds === undefined
+      ? {
+          lock: effective.scopeLocked ? ScopeLock.lockedTo([], { env: effective.env }) : ScopeLock.unlocked(),
+          authorizedScopes: [] as AuthorizedScope[],
+          connectedClient: undefined,
+        }
+      : await resolveLock(
+          effective.scopeLockNames,
+          effective.scopeLocked,
+          effective.env,
+          creds.scopeMap,
+          gatewayUrl,
+          creds.token,
+        );
   if (authorizedScopes.length > 0) {
     const summary = authorizedScopes.map((s) => `${s.scopeId} (${s.name})`).join(', ');
     log(`Scope lock active: ${String(authorizedScopes.length)} scope(s) authorized [${summary}]`);
@@ -394,7 +442,8 @@ async function runProxy(args: string[]): Promise<void> {
   const connectedProxy = await startProxy({
     events,
     gatewayUrl,
-    bearerToken: creds.token,
+    bearerToken: creds?.token ?? '',
+    ...(pendingReason !== undefined ? { pendingReason } : {}),
     registry,
     lock,
     disabledTools: loadedConfig.disabledTools,
@@ -411,10 +460,18 @@ async function runProxy(args: string[]): Promise<void> {
     registry,
     () => connectedProxy.getLock(),
     // Read the client through the getter, not by closure: reload() swaps it.
-    async (toolName, args) =>
-      (await connectedProxy.getGatewayClient().callTool({ name: toolName, arguments: args })) as unknown as Awaited<
+    async (toolName, args) => {
+      // Not reachable in practice: tools/call refuses every tool, local ones
+      // included, until the gateway is connected. Stated rather than asserted,
+      // because the alternative is a null-dereference at the far end of a relay.
+      const client = connectedProxy.getGatewayClient();
+      if (client === undefined) {
+        throw new Error(`'${toolName}' needs the FortMesa gateway, which is not connected yet.`);
+      }
+      return (await client.callTool({ name: toolName, arguments: args })) as unknown as Awaited<
         ReturnType<GatewayRelay>
-      >,
+      >;
+    },
   );
   log(
     `Local tools registered: [${registry.names().join(', ')}]; everything else proxied to the gateway. ` +
@@ -423,6 +480,49 @@ async function runProxy(args: string[]): Promise<void> {
         ? " — the local grc_documents_* tools are withheld and the gateway's URL-based ones pass through."
         : " — the gateway's document tools are advertised with local download/upload added."),
   );
+
+  // ── Background sign-in (MCPB / FMCODE_AUTO_LOGIN) ───────────
+  // Runs only when startup found no credentials. Deliberately NOT awaited:
+  // the stdio transport is connected above and the host's `initialize` has
+  // already been answered, so this can take the minutes a human takes. When
+  // it lands, reload() attaches the gateway and sends tools/list_changed; the
+  // agent re-reads tools/list and the FortMesa tools appear.
+  if (signInPending) {
+    void (async () => {
+      try {
+        if (!(await autoLoginIfEnabled(effective.env))) {
+          log(`Sign-in did not complete for env "${effective.env}" — FortMesa tools stay unavailable this session.`);
+          return;
+        }
+        const signedIn = await resolve();
+        log(`Credentials resolved (env: ${effective.env}, source: ${signedIn.source}, base: ${signedIn.baseUrl})`);
+        const resolved = await resolveLock(
+          effective.scopeLockNames,
+          effective.scopeLocked,
+          effective.env,
+          signedIn.scopeMap,
+          gatewayUrl,
+          signedIn.token,
+        );
+        // reload() opens its own gateway connection, so this one is ours to close.
+        if (resolved.connectedClient !== undefined) await resolved.connectedClient.close();
+        await connectedProxy.reload({
+          gatewayUrl,
+          env: effective.env,
+          bearerToken: signedIn.token,
+          apiBaseUrl: signedIn.baseUrl,
+          lock: resolved.lock,
+          disabledTools: loadedConfig.disabledTools,
+          documentsMode: loadedConfig.documentsMode,
+        });
+        log('Sign-in complete — gateway connected and the full tool list is now advertised.');
+      } catch (error) {
+        // Nothing above may reject into the void: an unhandled rejection kills
+        // the process, and the process IS the user's MCP server.
+        log(`Background sign-in failed: ${errorMessage(error)}`);
+      }
+    })();
+  }
 
   // ── Config-driven hot-reload (VSIX-PLAN §4.3 / D-V10) ───────
   // Once the proxy is running, live edits to config.json — from this CLI's
@@ -825,7 +925,7 @@ async function runLogin(rest: string[]): Promise<void> {
  * and stdin is the client's half of the JSON-RPC stream. Everything this
  * prints goes to stderr for the same reason.
  */
-async function autoLoginIfEnabled(env: string): Promise<boolean> {
+function autoLoginAvailable(env: string): boolean {
   if (process.env.FMCODE_AUTO_LOGIN !== 'true') return false;
 
   const clientId = ENVIRONMENTS[env]?.clientId;
@@ -833,6 +933,20 @@ async function autoLoginIfEnabled(env: string): Promise<boolean> {
     log(`No OAuth sign-in for env "${env}" — supply FORTMESA_API_TOKEN instead.`);
     return false;
   }
+  return true;
+}
+
+/**
+ * The message a gateway tool call gets while the background sign-in is still
+ * running. Written for an AGENT to relay: an MCPB user never sees stderr.
+ */
+const SIGN_IN_PENDING =
+  'FortMesa sign-in has not finished yet. A browser window was opened to sign you in to FortMesa; ' +
+  'complete it and the FortMesa tools will appear (the server sends a tools/list_changed when they do). ' +
+  "If no window opened, the sign-in URL is in this MCP server's log.";
+
+async function autoLoginIfEnabled(env: string): Promise<boolean> {
+  if (!autoLoginAvailable(env)) return false;
 
   const apiBase = await resolveApiBaseForLogin(env);
   const provider = resolveOAuthProvider(env, apiBase);

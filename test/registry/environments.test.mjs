@@ -22,6 +22,8 @@ import {
   PROD_ONLY_BUILD,
   gatewayDefaults,
   isSelectableEnv,
+  deriveDataRegion,
+  registerDataRegion,
 } from '../../dist/registry/environments.js';
 import { loadConfig } from '../../dist/registry/config.js';
 
@@ -118,4 +120,52 @@ test('prod-only flag: unset, every environment is selectable, including a custom
   for (const name of EXPECTED_ENV_NAMES) assert.equal(isSelectableEnv(name), true);
   // A user-added gateway in config.json stays usable in a normal build.
   assert.equal(isSelectableEnv('my-own-gateway'), true);
+});
+
+// ── Data region override (the MCPB's single user_config field) ────────────
+//
+// The point of these: a bare API base cannot carry a data region. The gateway,
+// the OAuth identity and the credentials key are all keyed off the environment
+// entry, so the override has to produce a WHOLE entry or it describes two
+// different places at once.
+
+test('data region: one URL moves the gateway, the API base and the OAuth identity together', () => {
+  const { name, entry } = deriveDataRegion('https://api.eu.fortmesa.com');
+
+  assert.equal(entry.api, 'https://api.eu.fortmesa.com');
+  // The gateway is the half a bare API base override silently left on production.
+  assert.equal(entry.gateway, 'https://mcp.eu.fortmesa.com/mcp');
+  assert.equal(entry.app, 'https://eu.fortmesa.com/');
+  assert.equal(entry.clientId, 'https://eu.fortmesa.com/oauth/saferoom-client-metadata.json');
+  assert.equal(entry.hostedCallback, 'https://eu.fortmesa.com/a/auth/saferoom/callback');
+  // Absent, not false: whether that region's app routes the first-land page is
+  // a per-deploy fact this cannot know.
+  assert.equal(entry.firstLandPage, undefined);
+  // Distinct from "prod", so two regions never overwrite each other's credentials.
+  assert.notEqual(name, 'prod');
+  assert.match(name, /^region-api\.eu\.fortmesa\.com$/);
+});
+
+test('data region: the derivation reproduces production exactly, and resolves to it', () => {
+  // The same rule applied to production's own address must yield production's
+  // real gateway/app/client — that is the evidence the convention is not a guess.
+  const { name, entry } = deriveDataRegion('https://api.fortmesa.com');
+  assert.equal(name, 'prod');
+  assert.equal(entry, ENVIRONMENTS.prod);
+});
+
+test('data region: anything that is not a FortMesa data region address is REFUSED', () => {
+  // Refusing is the safe outcome: a looser rule would send a bearer token to a
+  // host the user never named.
+  assert.throws(() => deriveDataRegion('ftp://nope'), /not a valid URL|must use https/);
+  assert.throws(() => deriveDataRegion('http://api.example.com'), /must use https/);
+  assert.throws(() => deriveDataRegion('https://example.com'), /must start with\s+"api\."/s);
+  assert.throws(() => deriveDataRegion('https://api.example.com/v2'), /drop the path/);
+});
+
+test('data region: registering one makes every environment-keyed lookup resolve it', () => {
+  const { name, entry } = registerDataRegion('https://api.test-region.example.com');
+  assert.equal(ENVIRONMENTS[name], entry);
+  assert.equal(isSelectableEnv(name), true);
+  delete ENVIRONMENTS[name];
 });

@@ -139,3 +139,60 @@ export function sortScopeRows<T extends { readonly name: string }>(
 ): T[] {
   return [...rows].sort((x, y) => compareScopeRows(mode, accessibleScopes, x.name, y.name));
 }
+
+/** The on-disk `scopeLock` shape this reducer reads — deliberately the same two fields as `Config['scopeLock']`, loosened to `string` only so this module stays free of the `config.ts` import (kept `vscode`-free and test-loadable, per this file's header). */
+export interface ScopeLockState {
+  readonly mode: string;
+  readonly scopes: readonly string[];
+}
+
+/** What {@link nextScopeLockOnSelectorClick} returns — always one of the two modes a single click can produce, so callers can assign it straight into `Config['scopeLock']` without a cast. */
+export interface ScopeLockClickResult {
+  readonly mode: 'single' | 'multi';
+  readonly scopes: string[];
+}
+
+/**
+ * MFDV-527. What one **Scope selector** row click does to the on-disk lock.
+ *
+ * Before this fix, `switchers.ts`'s `handleSelectScope` ignored the current
+ * lock entirely and always wrote `{ mode: 'single', scopes: [clicked] }` — so
+ * a checked (accessible) scope could never be unchecked by clicking it again.
+ *
+ * PO behaviour (2026-09-18):
+ *  - Clicking an already-selected ACCESSIBLE scope deselects it, but only when
+ *    more than one scope is currently accessible — the last accessible scope
+ *    can never be clicked away, matching `ScopeLock`'s fail-closed contract
+ *    (an empty locked set denies everything, which is a valid but distinct
+ *    state the user must reach through Clear in the multi-select panel, not
+ *    an accidental single click).
+ *  - Clicking an INACCESSIBLE scope switches to it exclusively: select the
+ *    new scope, deselect everything else. This is also what happens when
+ *    `mode === 'unlocked'` — nothing is "currently selected" in that mode's
+ *    sense (every scope reads as accessible, per {@link scopeRowPresentation}),
+ *    so a click there has always meant "lock down to just this one", and that
+ *    is unchanged.
+ *
+ * Pure and total; `switchers.ts` does nothing but call this and save the
+ * result, which is what makes it unit-testable outside `vscode`.
+ */
+export function nextScopeLockOnSelectorClick(scopeLock: ScopeLockState, clickedScope: string): ScopeLockClickResult {
+  const isMember = scopeLock.mode !== 'unlocked' && scopeLock.scopes.includes(clickedScope);
+
+  if (isMember && scopeLock.scopes.length > 1) {
+    const scopes = scopeLock.scopes.filter((name) => name !== clickedScope);
+    return { mode: scopes.length === 1 ? 'single' : 'multi', scopes };
+  }
+
+  if (isMember) {
+    // The only accessible scope, and it is the one clicked — never deselect
+    // the last one. No-op (still a fresh array; callers may rely on identity
+    // never being reused as "nothing changed" the way scope-sync.ts's
+    // `sameSelection` does for the multi-select panel).
+    return { mode: 'single', scopes: [...scopeLock.scopes] };
+  }
+
+  // Inaccessible (locked elsewhere), or nothing is locked at all: switch to
+  // this scope exclusively.
+  return { mode: 'single', scopes: [clickedScope] };
+}

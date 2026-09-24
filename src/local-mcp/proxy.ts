@@ -57,6 +57,26 @@ export interface ProxyOptions {
    * original behavior: `startProxy` connects its own via `connectGateway`.
    */
   readonly gatewayClient?: Client;
+  /**
+   * Start WITHOUT an upstream gateway connection, serving stdio immediately,
+   * and explain the wait to any agent that calls a gateway tool meanwhile.
+   *
+   * This exists for exactly one caller: the MCPB/auto-login bootstrap in
+   * `cli.ts`. An MCPB host spawns this server and then waits for
+   * `initialize`; a first install has no credentials, and the browser
+   * sign-in that obtains them takes as long as a human takes. Blocking the
+   * startup path on it meant the host's initialize timeout expired first and
+   * Claude Desktop reported "Unable to connect to extension server" — the
+   * server was alive and mid-sign-in, but had never connected its transport.
+   *
+   * So: connect stdio first, serve `initialize` and `tools/list` (local tools
+   * only, since nothing upstream is known yet), refuse gateway-bound calls
+   * with this reason, and let the sign-in complete in the background. The
+   * existing {@link ConnectedProxy.reload} is what attaches the gateway
+   * afterwards, which also fires `tools/list_changed` so the agent re-reads
+   * the now-complete list.
+   */
+  readonly pendingReason?: string;
 }
 
 /**
@@ -108,8 +128,13 @@ export interface ConnectedProxy {
    * Same live-read reason as `getLock`: reload() swaps the client, and a
    * handler that captured the old one by closure would talk to a closed
    * transport.
+   *
+   * `undefined` until the gateway is connected — see
+   * {@link ProxyOptions.pendingReason}. Callers must handle it; `tools/call`
+   * refuses everything while that is the case, so a local tool's relay only
+   * sees it in a state that should not occur.
    */
-  readonly getGatewayClient: () => Client;
+  readonly getGatewayClient: () => Client | undefined;
   /**
    * True while a failed reload has quarantined the proxy. Exposed so `cli.ts`
    * can report the state rather than only logging the throw.
@@ -202,10 +227,18 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
   // ── Upstream: streamable HTTP client to the gateway ────────
   // Reassigned in reload() below when the upstream gateway connection is
   // rebuilt — bound with `let` for the same reason as `lock` above.
-  let gatewayClient: Client;
+  //
+  // `undefined` is a real state, not an oversight: see ProxyOptions.pendingReason.
+  // Every read below is guarded, and `reload()` is what fills it in.
+  let gatewayClient: Client | undefined;
+  // Cleared by a successful reload() — the same reassignment pattern as `lock`.
+  let pendingReason = options.pendingReason;
   if (options.gatewayClient !== undefined) {
     gatewayClient = options.gatewayClient;
+    pendingReason = undefined;
     log(`Reusing pre-connected gateway client for ${gatewayUrl.toString()}`);
+  } else if (pendingReason !== undefined) {
+    log(`Starting WITHOUT an upstream gateway connection: ${pendingReason}`);
   } else {
     gatewayClient = await connectGateway(gatewayUrl, bearerToken, clientVersion);
     log(`Connected to gateway at ${gatewayUrl.toString()}`);
@@ -232,12 +265,24 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
    * so a reload's replacement client is used by the next refresh.
    */
   const schemaCache = new ToolSchemaCache({
-    fetchTools: async () => gatewayClient.listTools(),
+    fetchTools: async () => {
+      // Unreachable while `tools/list` below guards the call, and deliberately
+      // a throw rather than an empty list: an empty answer would be CACHED as
+      // the gateway's tool surface, and the agent would keep seeing no
+      // FortMesa tools after sign-in until the window expired.
+      if (gatewayClient === undefined) throw new Error('the FortMesa gateway is not connected yet');
+      return gatewayClient.listTools();
+    },
     log,
   });
 
   server.setRequestHandler('tools/list', async () => {
-    const upstream = { tools: await schemaCache.get() };
+    // No upstream yet (sign-in still running): advertise the local tools alone
+    // rather than failing the request, and do NOT populate the schema cache
+    // from an empty answer. A host that cannot list tools treats the server as
+    // broken; an agent that sees a short list simply sees a short list, and
+    // gets the full one on the tools/list_changed that reload() sends.
+    const upstream = gatewayClient === undefined ? { tools: [] } : { tools: await schemaCache.get() };
 
     // A local tool SHADOWS the gateway's tool of the same name, so the same name is never
     // advertised twice with two different schemas (which one an agent validates against
@@ -297,6 +342,15 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
         return toolError(blockedReason);
       }
 
+      // Sign-in has not finished, so there is no upstream and no credentials
+      // for the local tools either. Say so, in a form an agent can relay to
+      // the user. Blocked like the two cases either side of it: the call never
+      // reached anything, so the timeline row must not read as a tool failure.
+      if (pendingReason !== undefined) {
+        event.settle('error', { errorClass: 'blocked' });
+        return toolError(pendingReason);
+      }
+
       // W3 tool selector (D-U4): a disabled tool is absent from tools/list, but
       // a stale/direct call must still be rejected with a clear isError rather
       // than silently falling through to local dispatch or gateway relay.
@@ -343,6 +397,11 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
       // the new client before closing the old one, but an in-flight call on
       // the old client can still see its transport closed mid-request).
       // Surface a clear, retryable error instead of a raw transport rejection.
+      if (gatewayClient === undefined) {
+        event.settle('error', { errorClass: 'blocked' });
+        return toolError(`tool '${name}' needs the FortMesa gateway, which is not connected yet.`);
+      }
+
       let result: CallToolResult;
       try {
         result = await gatewayClient.callTool({ name, arguments: args });
@@ -381,14 +440,18 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
   // registry before it's populated. `cli.ts` logs the final tool list itself
   // once registration completes — logging `registry.names()` here would
   // always print `[]`.
-  log('Local MCP started (stdio) — connected to the gateway; local tool registration follows.');
+  log(
+    gatewayClient === undefined
+      ? 'Local MCP started (stdio) — NOT yet connected to the gateway; local tool registration follows.'
+      : 'Local MCP started (stdio) — connected to the gateway; local tool registration follows.',
+  );
 
   return {
     close: async () => {
       emitLifecycle('gateway.disconnect', 'disconnect', 'ok');
       events.close();
       await mcp.close();
-      await gatewayClient.close();
+      if (gatewayClient !== undefined) await gatewayClient.close();
     },
 
     getLock: () => lock,
@@ -439,6 +502,8 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
       gatewayClient = nextClient;
       // The new gateway may publish different tools; do not serve the old ones.
       schemaCache.invalidate();
+      // The gateway is up: stop refusing calls with the bootstrap explanation.
+      pendingReason = undefined;
       lock = next.lock;
       disabledTools = new Set(next.disabledTools);
       documentsMode = next.documentsMode;
@@ -455,7 +520,7 @@ export async function startProxy(options: ProxyOptions): Promise<ConnectedProxy>
       mcp.sendToolListChanged();
       log('Reload: sent tools/list_changed notification to the agent');
 
-      await previousClient.close().catch((closeError: unknown) => {
+      await previousClient?.close().catch((closeError: unknown) => {
         log(
           `Reload: error closing previous gateway connection (ignored): ${closeError instanceof Error ? closeError.message : String(closeError)}`,
         );

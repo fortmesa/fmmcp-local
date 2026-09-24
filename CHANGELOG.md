@@ -1,3 +1,70 @@
+## [2026-09-23T21:05:32Z] Release: release/fmmcp-local-v0.9.1-20260923-docs-MFDV-246-docs-proxy-text
+
+- User: Matthew Fisch + Claude Code (Fable 5.1 conductor + packet)
+- Version: 0.9.1
+- Commit: release commit on release/fmmcp-local-v0.9.1-20260923-docs-MFDV-246-docs-proxy-text (content b59430f)
+
+### What's New
+
+Docs-only patch release. No user-facing behaviour change.
+
+### Developer Notes
+
+- **Docs**: corrected the `grc_documents_write` tool description — upload URLs it returns are
+  gateway files-proxy URLs (`/v3/files/...`), not presigned S3 URLs. (b59430f)
+- **Gates**: format check, `eslint --max-warnings 0`, `yarn install --immutable`, unit: 733 tests,
+  732 pass, 0 fail, 1 skipped. No lint fixes needed.
+
+### Known gaps
+
+- No rebase was needed: origin/master and this branch's parent (76a1d37) are the same commit at
+  cut time.
+
+---
+
+## [2026-09-23T02:45:51Z] Release: integ/local-next-2026-09-23
+
+- User: Matthew Fisch + Claude Code (Fable 5.1 conductor + packets) (MFDV-527, FMENG-3162)
+- Version: 0.9.0
+- Commit: release commit on integ/local-next-2026-09-23 (content e558c59, 0be15db)
+
+### What's New
+
+#### The Scope selector does what a click suggests
+
+**Clicking a selected scope now deselects it, and clicking any other scope switches to it.**
+Before, a click always replaced your selection with the scope you clicked, so there was no way
+to narrow a multi-scope selection from the list. Now, when more than one scope is selected,
+clicking one of them removes it from the selection. Saferoom never removes the last one, so you
+always keep at least one active scope. Clicking a scope that is not selected switches to it
+directly: it becomes the only selected scope.
+
+### Developer Notes
+
+- **Changed**: `src/extension/switchers.ts`. The `fortmesa.selectScope` row click now goes through
+  a reducer instead of always writing `{mode:'single', scopes:[clicked]}`. (e558c59)
+- **New**: `nextScopeLockOnSelectorClick` in `src/registry/scope-display.ts`. It is a pure reducer:
+  deselect only when more than one scope is accessible, and an inaccessible or `unlocked` click is
+  an exclusive switch. (e558c59)
+- **Tests**: `test/registry/scope-selector-click.test.mjs`. (e558c59)
+- **New**: `scripts/lib/list-plans-shape.mjs` (`normalizeListPlansResult`), wired into
+  `scripts/test-runner.mjs`. The E2E runner accepts both the bare-array `list_plans` result and the
+  gateway's new `{ plans, hiddenCount, note }` shape (FMENG-3162, gateway 0.7.0). The helper is
+  scoped to the test runner, and no shipped extension or CLI code reads `list_plans`. (0be15db)
+- **Tests**: `test/scripts/list-plans-shape.test.mjs` covers both shapes and the case where neither
+  matches. (0be15db)
+- **Gates**: format check, `eslint --max-warnings 0`, type-check, `yarn install --immutable`, unit:
+  733 tests, 732 pass, 0 fail, 1 skipped. Audit: 2 moderate deprecations, both dev-only through
+  `@vscode/vsce` (prebuild-install via keytar, whatwg-encoding via cheerio). Runtime deps are clean.
+
+### Known gaps
+
+- No manual verification in VS Code yet; the PO verifies the selector behaviour.
+- The VSIX and MCPB bundles were not rebuilt in this release packet.
+
+- Regression pass vs the v0.7.9 baseline (57a321e): 0 confirmed regressions; 18 baseline tests were removed earlier by the FMENG-3097 documents-to-gateway relay (d24b836) and replaced by relay tests, so that coverage now lives in the gateway. Whether the gateway refuses a documents update that changes nothing, as the local code used to, is unverified.
+- In a multi-scope selection, clicking a selected scope now removes only that scope; before it collapsed the selection to that scope alone. Intentional (MFDV-527).
+
 # Changelog
 
 ## [2026-09-14T17:01:25Z] Release: feat/MFDV-246-saferoom-0.8.0

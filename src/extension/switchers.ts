@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { loadConfig, saveConfig, type Config } from '../registry/config.js';
+import { nextScopeLockOnSelectorClick } from '../registry/scope-display.js';
 import { errorMessage, type Logger } from './logger.js';
 import { openScopeSelectionPanel } from './scope-select-panel.js';
 
@@ -33,7 +34,18 @@ import { openScopeSelectionPanel } from './scope-select-panel.js';
  * VSIX-PLAN.md §4.3 / D-V10.
  */
 
-/** `fortmesa.selectScope` — Scopes panel row click (UX-ROUND-2-PLAN.md W5, D-U3): switch directly to the given single scope, no quickpick (the row itself IS the selection). `scopeName` comes from the tree item's own command arguments — see `tree-view.ts`'s `fetchScopeRows`. */
+/**
+ * `fortmesa.selectScope` — Scope selector row click (UX-ROUND-2-PLAN.md W5,
+ * D-U3): the row itself IS the selection, no quickpick. `scopeName` comes
+ * from the tree item's own command arguments — see `tree-view.ts`'s
+ * `fetchScopeRows`.
+ *
+ * MFDV-527: this used to always overwrite the lock with `{mode: 'single',
+ * scopes: [scopeName]}`, so a checked (accessible) scope could never be
+ * unchecked by clicking it again. The actual next state is decided by the
+ * pure, unit-tested `nextScopeLockOnSelectorClick` reducer in
+ * `scope-display.ts` — this handler just loads, decides, saves.
+ */
 async function handleSelectScope(scopeName: string, log: Logger): Promise<void> {
   let config: Config;
   try {
@@ -43,10 +55,17 @@ async function handleSelectScope(scopeName: string, log: Logger): Promise<void> 
     return;
   }
 
-  const nextConfig: Config = { ...config, scopeLock: { mode: 'single', scopes: [scopeName] } };
+  const next = nextScopeLockOnSelectorClick(config.scopeLock, scopeName);
+  const nextConfig: Config = { ...config, scopeLock: next };
   await saveConfig(nextConfig);
-  log.info(`fortmesa.selectScope: scope lock set to single: ${scopeName}`);
-  void vscode.window.showInformationMessage(`FortMesa: only "${scopeName}" is accessible.`);
+
+  const stillAccessible = next.scopes.includes(scopeName);
+  log.info(`fortmesa.selectScope: scope lock set to ${next.mode}: [${next.scopes.join(', ')}] (clicked ${scopeName})`);
+  if (next.scopes.length === 1 && next.scopes[0] === scopeName) {
+    void vscode.window.showInformationMessage(`FortMesa: only "${scopeName}" is accessible.`);
+  } else if (!stillAccessible) {
+    void vscode.window.showInformationMessage(`FortMesa: "${scopeName}" is no longer accessible.`);
+  }
 }
 
 /** Register the scope switcher handlers, disposed via `context.subscriptions`. `clientVersion` is this extension's own version (see `extension.ts`'s `resolveClientVersion`), used only by the Accessible scopes panel's live gateway scope list. */
