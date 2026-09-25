@@ -171,8 +171,8 @@ jobs:
       # Fail loudly on a missing artifact rather than publishing a partial
       # release. `mv` alone would only warn.
       # Staged in release-assets/, NOT dist/: `yarn build` writes the tsc
-      # output tree to dist/, so staging here would mix compiled modules in
-      # with the artifacts and hand `files: dist/*` a set of directories.
+      # output tree to dist/, so staging there would mix compiled modules in
+      # with the artifacts and upload a set of directories with them.
       - name: Collect release assets
         run: |
           set -eu
@@ -187,18 +187,21 @@ jobs:
           done
           ls -la release-assets
 
-      # The glob expands before the redirect creates the file, so
-      # checksums.txt never lists itself.
-      - name: Generate checksums
-        working-directory: release-assets
-        run: sha256sum * > checksums.txt
-
+      # The GitHub CLI, not a release action. Only actions/* may run here, and
+      # GitHub's own create-release action is archived. ubuntu-slim ships gh.
+      # A re-run finds the release its first attempt made, so it replaces the
+      # assets on it rather than failing on create.
       - name: Create release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
-        with:
-          files: release-assets/*
-          generate_release_notes: true
-          fail_on_unmatched_files: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --generate-notes
+          fi
 
       # Handed to the publish job rather than rebuilt there. A second build
       # would produce a different VSIX (zip timestamps alone differ), so the
