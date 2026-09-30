@@ -2,6 +2,7 @@ import { ENVIRONMENTS } from './environments.js';
 import { decodeJwtExpiry, readCurrentToken, readRefreshToken, writeToken } from './credentials.js';
 import { refreshAccessToken } from './pkce.js';
 import { resolveOAuthProvider } from './oauth-provider.js';
+import { notifyAuthRefreshed } from './identity-events.js';
 
 /**
  * Spend a stored refresh token to replace an access token that is expiring.
@@ -54,7 +55,28 @@ function remainingMs(token: string): number | undefined {
  * @param currentToken the token on disk now
  * @param apiBase      the environment's API base, for the RFC 8707 resource indicator
  */
-export async function refreshIfExpiring(env: string, currentToken: string, apiBase: string): Promise<RefreshOutcome> {
+export function refreshIfExpiring(env: string, currentToken: string, apiBase: string): Promise<RefreshOutcome> {
+  // One refresh per env at a time, in this process. Rotation is ON, so two
+  // concurrent redemptions of the same refresh token make the loser fail and
+  // surfaces (status bar, sidebar) that start a refresh independently would do
+  // exactly that (MFDV-581). Callers that arrive mid-flight share the result.
+  const running = inFlight.get(env);
+  if (running !== undefined) return running;
+
+  const attempt = redeemRefresh(env, currentToken, apiBase).then((outcome) => {
+    inFlight.delete(env);
+    // Tell every other surface the credential on disk changed, so none keeps
+    // painting the token it read before this refresh.
+    if (outcome.reason === 'refreshed' || outcome.reason === 'raced') notifyAuthRefreshed(env);
+    return outcome;
+  });
+  inFlight.set(env, attempt);
+  return attempt;
+}
+
+const inFlight = new Map<string, Promise<RefreshOutcome>>();
+
+async function redeemRefresh(env: string, currentToken: string, apiBase: string): Promise<RefreshOutcome> {
   const remaining = remainingMs(currentToken);
   // No `exp` means an opaque or non-expiring token; there is nothing to act on.
   if (remaining === undefined || remaining > REFRESH_LEAD_MS) return { reason: 'not-needed' };

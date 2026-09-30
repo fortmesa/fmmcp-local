@@ -94,11 +94,44 @@ export function notifyIdentityChanged(change: IdentityChange): void {
   }
 }
 
+/**
+ * A silent token refresh completed for `env` (MFDV-581). Deliberately NOT an
+ * {@link IdentityChange}: the identity did not change, so the heavy fan-out
+ * (scope reload, event-bus rows) must not run. It exists so every surface that
+ * renders auth state — the status bar and the Signed-in user pane — repaints
+ * from the ONE credentials.json the refresh just rewrote.
+ */
+export type AuthRefreshedListener = (env: string) => void;
+
+const refreshListeners = new Set<AuthRefreshedListener>();
+
+/** Subscribe to completed token refreshes. Dispose to unsubscribe. */
+export function onAuthRefreshed(listener: AuthRefreshedListener): IdentityChangeSubscription {
+  refreshListeners.add(listener);
+  return {
+    dispose: () => {
+      refreshListeners.delete(listener);
+    },
+  };
+}
+
+/** Announce that `env`'s access token was just replaced on disk. Listener failures are isolated, as above. */
+export function notifyAuthRefreshed(env: string): void {
+  for (const listener of [...refreshListeners]) {
+    try {
+      listener(env);
+    } catch {
+      // One surface failing to repaint must not stop the others.
+    }
+  }
+}
+
 /** Drop every listener. Registered by `extension.ts` so nothing survives an extension-host teardown. */
 export function disposeIdentityEvents(): IdentityChangeSubscription {
   return {
     dispose: () => {
       listeners.clear();
+      refreshListeners.clear();
     },
   };
 }

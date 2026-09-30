@@ -95,6 +95,8 @@ test('the status bar gains an expiry hint driven from the same notice', async ()
   assert.match(bar, /\$\(warning\)/);
 
   const ext = await readFile(new URL('../../dist/extension/extension.js', import.meta.url), 'utf-8');
-  assert.match(ext, /setSessionExpired/, 'activation must actually wire the hint');
-  assert.match(ext, /readCredentialsSummary/, 'the expired fact comes from the stored credential');
+  assert.match(ext, /createStatusBarController/, 'activation must actually wire the hint (via the controller)');
+  // MFDV-581: the hint is driven by the ONE auth state, which refreshes before judging.
+  assert.match(bar, /setSessionExpired\(auth\.expired/, 'the controller drives the hint from the auth state');
+  assert.match(bar, /readAuthState/, 'the expired fact comes from the stored credential, after a refresh attempt');
 });

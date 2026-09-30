@@ -316,6 +316,17 @@ export async function readCredentialsSummary(
   return summary;
 }
 
+/** The API base recorded next to `env`'s token, or `undefined` when there is none. */
+export async function readStoredApiBase(env: string): Promise<string | undefined> {
+  const fileData = await readCredentialsFileRaw(credentialsFilePath());
+  const environments = fileData.environments;
+  if (!isRecord(environments)) return undefined;
+  const envBlock = environments[env];
+  if (!isRecord(envBlock)) return undefined;
+  const base = envBlock.fortmesa_api_base;
+  return typeof base === 'string' && base.length > 0 ? base : undefined;
+}
+
 /**
  * Read the CURRENT token stored for `env` directly from credentials.json —
  * used only by UI/validation surfaces (the Saferoom Auth tree section,

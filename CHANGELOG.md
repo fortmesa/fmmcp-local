@@ -1,3 +1,31 @@
+## [2026-09-30T17:37:59Z] Release: fix/MFDV-581-statusbar-auth
+
+- User: Matthew Fisch + Claude Code (MFDV-581)
+- Version: 0.9.2
+- Commit: release commit on fix/MFDV-581-statusbar-auth (content 1383706)
+
+### What's New
+
+#### The status bar stays in step with the sidebar
+
+**The status bar no longer says "not logged in" after the sidebar has quietly refreshed an expired
+token.** Both now read the same sign-in state, so they agree. The sidebar also no longer shows
+"Session expired" on the very render that refreshed your session.
+
+### Developer Notes
+
+- **Auth**: a single auth-state source now drives both the status bar and the sidebar. (1383706)
+- **Auth**: token refresh is single-flight per environment, so concurrent callers share one refresh.
+- **Gates**: format check, `eslint . --max-warnings 0`, `tsc --noEmit`, `yarn install --immutable`
+  (offline, cache only), `yarn npm audit` (no suggestions), unit: 736 tests, 735 pass, 0 fail,
+  1 skipped.
+
+### Known gaps
+
+- The VSIX package build was not run in the sandbox; the PO builds it with `yarn package:ext:prod`.
+
+---
+
 ## [2026-09-23T21:05:32Z] Release: release/fmmcp-local-v0.9.1-20260923-docs-MFDV-246-docs-proxy-text
 
 - User: Matthew Fisch + Claude Code (Fable 5.1 conductor + packet)

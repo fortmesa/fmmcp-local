@@ -22,7 +22,7 @@ import {
   type SessionRecovery,
 } from '../registry/session-status.js';
 import { signOutOfEnvironment } from './auth-commands.js';
-import { notifyIdentityChanged } from '../registry/identity-events.js';
+import { notifyIdentityChanged, onAuthRefreshed } from '../registry/identity-events.js';
 import { errorMessage, type Logger } from './logger.js';
 
 /**
@@ -176,6 +176,11 @@ async function buildState(): Promise<IdentityViewState> {
   let identity: Identity | undefined;
   try {
     const creds = await resolveCredentials(env);
+    // `resolveCredentials` renews an expiring token, so the token it returns
+    // is the live one. `token` above was read BEFORE that, and judging expiry
+    // from it painted "Session expired" for a session this very call had just
+    // renewed (MFDV-581).
+    token = creds.token;
     identity = await fetchIdentity(creds.baseUrl, creds.token);
   } catch {
     identity = undefined;
@@ -435,7 +440,14 @@ export class IdentityViewProvider implements vscode.WebviewViewProvider {
       });
     });
 
+    // A refresh completed by another surface (the status bar) rewrote
+    // credentials.json: re-read it here too (MFDV-581).
+    const refreshSubscription = onAuthRefreshed(() => {
+      this.refresh();
+    });
+
     webviewView.onDidDispose(() => {
+      refreshSubscription.dispose();
       this.view = undefined;
     });
   }

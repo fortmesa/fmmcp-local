@@ -26,8 +26,6 @@ import { chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
 import { loadConfig, watchConfig, type Config } from '../registry/config.js';
-import { readCredentialsSummary } from '../registry/credentials.js';
-import { expiredSessionNotice } from '../registry/session-status.js';
 import { detectCapabilities } from './fork-detect.js';
 import { disposeIdentityEvents, onIdentityChanged } from '../registry/identity-events.js';
 import { registerIdeSyncCommands, runSyncPass } from './ide-sync-commands.js';
@@ -43,7 +41,7 @@ import { registerSaferoomLauncherCommands } from './saferoom-launcher.js';
 import { refreshScopeSelectionIfOpen } from './scope-select-panel.js';
 import { refreshSaferoomSettingsIfOpen, registerSaferoomSettingsCommand } from './saferoom-settings.js';
 import { startSettingsReconciliation } from './settings-sync.js';
-import { createStatusBar, type StatusBarScopeState } from './status-bar.js';
+import { createStatusBar, createStatusBarController } from './status-bar.js';
 import { registerSwitcherCommands } from './switchers.js';
 import { SaferoomLauncherTreeProvider, ScopesTreeProvider } from './tree-view.js';
 
@@ -315,21 +313,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // "not signed in" — the least misleading assumption when the file's state
   // is genuinely unknown — rather than asserting a status it could not
   // confirm.
+  const statusBarController = createStatusBarController(statusBar, log);
+  context.subscriptions.push(statusBarController);
   const refreshStatusBarForActiveEnv = (config: Config): void => {
-    void readCredentialsSummary(config.activeEnv)
-      .then((summary) => {
-        const signedIn = summary.hasToken && summary.expired !== true;
-        const state: StatusBarScopeState = { signedIn, mode: config.scopeLock.mode, scopes: config.scopeLock.scopes };
-        statusBar.update(state);
-        statusBar.setSessionExpired(
-          summary.expired === true ? expiredSessionNotice(config.activeEnv).statusBarTooltip : undefined,
-        );
-      })
-      .catch((error: unknown) => {
-        statusBar.update({ signedIn: false, mode: config.scopeLock.mode, scopes: config.scopeLock.scopes });
-        statusBar.setSessionExpired(undefined);
-        log.warn(`could not check credential expiry for the status bar: ${errorMessage(error)}`);
-      });
+    void statusBarController.refresh(config);
   };
 
   let previousIdeSync: Config['ideSync'] | undefined;
