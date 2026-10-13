@@ -28,6 +28,15 @@ const MALFORMED_FIXTURE = join(REPO_ROOT, 'test/fixtures/ide-configs/codex-mcp-m
 const SPEC = { command: '/workspaces/fmmcp-local/launch-mcp.sh', args: [] };
 
 /**
+ * Read back what the projector wrote. smol-toml 1.9 returns tables with a null
+ * prototype, and node:assert/strict's deepEqual compares prototypes, so the
+ * JSON round trip turns them into plain objects. These tests check values.
+ */
+async function readWrittenToml(path) {
+  return JSON.parse(JSON.stringify(parse(await readFile(path, 'utf-8'))));
+}
+
+/**
  * Run `fn` with `CODEX_HOME_DIR` pointed at a fresh temp dir and `PATH`
  * cleared, so every test deterministically exercises the TOML file-fallback
  * path (never the `codex` CLI path) regardless of whether some other tool
@@ -69,7 +78,7 @@ test('codex projector: file-fallback merge preserves foreign state and manages o
         assert.equal(result.action, 'added');
         assert.equal(result.restartNote, 'restart your next Codex CLI/IDE invocation to pick up this change');
 
-        const written = parse(await readFile(configPath, 'utf-8'));
+        const written = await readWrittenToml(configPath);
 
         // Foreign top-level scalar survives by value.
         assert.equal(written.__testUnrelatedTopLevelSetting, 'must-survive-untouched');
@@ -108,7 +117,7 @@ test('codex projector: file-fallback merge preserves foreign state and manages o
       assert.equal(result.target, 'codex');
       assert.equal(result.action, 'updated');
 
-      const written = parse(await readFile(configPath, 'utf-8'));
+      const written = await readWrittenToml(configPath);
 
       assert.equal(written.__testUnrelatedTopLevelSetting, 'must-survive-untouched');
       assert.deepEqual(written.some_other_tool, { enabled: true, note: 'leave me alone' });
@@ -146,7 +155,7 @@ test('codex projector: fresh machine (no config.toml yet) — project(spec, true
     const result = await project(SPEC, true);
     assert.equal(result.action, 'added');
 
-    const written = parse(await readFile(configPath, 'utf-8'));
+    const written = await readWrittenToml(configPath);
     assert.deepEqual(Object.keys(written), ['mcp_servers']);
     assert.deepEqual(written.mcp_servers.fortmesa, { command: SPEC.command, args: [], enabled: true });
   });
@@ -171,7 +180,7 @@ test('codex projector: an unparseable config.toml is treated as empty, not a cra
     const result = await project(SPEC, true);
     assert.equal(result.action, 'added');
 
-    const written = parse(await readFile(configPath, 'utf-8'));
+    const written = await readWrittenToml(configPath);
     assert.deepEqual(written.mcp_servers.fortmesa, { command: SPEC.command, args: [], enabled: true });
   });
 });

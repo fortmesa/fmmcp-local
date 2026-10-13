@@ -9,9 +9,9 @@ FortMesa Saferoom bundles the following third-party packages into its packaged e
 
 _Generated from 15 production dependencies._
 
-## @modelcontextprotocol/client@2.0.0
+## @modelcontextprotocol/client@2.3.1
 
-- **License**: MIT
+- **License**: Apache-2.0
 - **Copyright / Author**: Anthropic, PBC (https://anthropic.com)
 - **Repository**: git+https://github.com/modelcontextprotocol/typescript-sdk.git
 - **License text** (from package's `LICENSE`):
@@ -235,9 +235,9 @@ CC-BY-4.0. See https://creativecommons.org/licenses/by/4.0/legalcode for
 the full license text.
 ```
 
-## @modelcontextprotocol/core@2.0.0
+## @modelcontextprotocol/core@2.3.1
 
-- **License**: MIT
+- **License**: Apache-2.0
 - **Copyright / Author**: Anthropic, PBC (https://anthropic.com)
 - **Repository**: git+https://github.com/modelcontextprotocol/typescript-sdk.git
 - **License text** (from package's `LICENSE`):
@@ -461,9 +461,9 @@ CC-BY-4.0. See https://creativecommons.org/licenses/by/4.0/legalcode for
 the full license text.
 ```
 
-## @modelcontextprotocol/server@2.0.0
+## @modelcontextprotocol/server@2.3.1
 
-- **License**: MIT
+- **License**: Apache-2.0
 - **Copyright / Author**: Anthropic, PBC (https://anthropic.com)
 - **Repository**: git+https://github.com/modelcontextprotocol/typescript-sdk.git
 - **License text** (from package's `LICENSE`):
@@ -925,7 +925,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## smol-toml@1.8.0
+## smol-toml@1.9.1
 
 - **License**: BSD-3-Clause
 - **Copyright / Author**: Cynthia Rey <cynthia@cynthia.dev>
@@ -984,7 +984,7 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
 IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-## zod@4.5.4
+## zod@4.6.5
 
 - **License**: MIT
 - **Copyright / Author**: Colin McDonnell <zod@colinhacks.com>

@@ -1,6 +1,6 @@
 {
   "name": "saferoom",
-  "version": "0.9.114",
+  "version": "0.9.120",
   "description": "Environment, scope, and credential management for the FortMesa MCP proxy — across Claude Code, VS Code, Cursor, Codex, and Antigravity.",
   "displayName": "FortMesa Saferoom",
   "publisher": "fortmesa",
@@ -28,7 +28,7 @@
     "node": ">=24.0.0",
     "vscode": "^1.102.0"
   },
-  "packageManager": "yarn@4.12.0+sha512.f45ab632439a67f8bc759bf32ead036a1f413287b9042726b7cc4818b7b49e14e9423ba49b18f9e06ea4941c1ad062385b1d8760a8d5091a1a31e5f6219afca8",
+  "packageManager": "yarn@4.17.0",
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
@@ -54,27 +54,30 @@
     "notices:check": "node scripts/release/check-third-party-notices.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/server": "^2.0.0",
-    "smol-toml": "^1.7.0",
-    "zod": "^4.4.0"
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/server": "^2.3.1",
+    "smol-toml": "^1.9.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",
     "@types/node": "^24.0.0",
     "@types/vscode": "~1.102.0",
-    "@vscode/vsce": "^3.9.2",
+    "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.1",
-    "eslint": "^10.0.0",
+    "eslint": "^10.12.0",
     "eslint-config-prettier": "^10.0.0",
-    "eslint-plugin-n": "^18.0.0",
-    "eslint-plugin-secure-coding": "^5.0.0",
+    "eslint-plugin-n": "^18.4.1",
+    "eslint-plugin-secure-coding": "^5.4.16",
     "husky": "^9.0.0",
-    "lint-staged": "^17.0.0",
-    "ovsx": "^1.1.1",
-    "prettier": "^3.5.0",
+    "lint-staged": "^17.6.0",
+    "ovsx": "^1.2.0",
+    "prettier": "^3.9.9",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.0.0"
+    "typescript-eslint": "^8.71.1"
+  },
+  "resolutions": {
+    "ovsx/@vscode/vsce": "^4.0.0"
   },
   "lint-staged": {
     "*.{ts,mts,cts}": [

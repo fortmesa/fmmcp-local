@@ -20,7 +20,7 @@ name: Release
 #
 #   2. Yarn is invoked through the committed release binary rather than
 #      `corepack enable`. This repo's own bitbucket-pipelines.yml documents
-#      why: corepack would want to download 4.12.0, and the exact binary is
+#      why: corepack would want to download 4.17.0, and the exact binary is
 #      already git-tracked under .yarn/releases. Keeps CI network-free.
 #
 # Artifacts are PROD builds. `package:ext:prod` strips the sandbox, next and
@@ -29,15 +29,13 @@ name: Release
 # sideloading only; AGENTS.md says it is not shippable, and the Release page is
 # public.
 #
-# All three artifacts go to the GitHub Release page. The VSIX additionally
-# goes to Open VSX, from a separate job.
+# All three artifacts go to the GitHub Release page. The VSIX also goes to
+# Open VSX and to the VS Code Marketplace, each from its own job.
 #
-# The VS Code Marketplace is still a manual upload. Publishing there needs a
-# global Azure DevOps PAT, which Microsoft retires on 2026-12-01, and the
-# documented replacement (a managed identity with workload identity
-# federation) has no published GitHub Actions path. Building against a
-# credential with a known end date was not worth it; Open VSX needs a plain
-# token and has no such cliff.
+# Neither publish job uses a stored credential. Open VSX takes this run's
+# GitHub OIDC token through trusted publishing. The Marketplace job trades
+# the same token for a Microsoft Entra token as a managed identity. The
+# global Azure DevOps PATs vsce used before stop working on 2026-12-01.
 
 on:
   push:
@@ -51,11 +49,13 @@ permissions:
   contents: read
 
 jobs:
-  # The ONLY job that runs untrusted install-time code (dependency lifecycle
-  # scripts -- enableScripts is not disabled in this repo). `test` and
-  # `release` restore its output from cache and never run `yarn install`
-  # themselves, so a compromised postinstall never executes in the job that
-  # holds contents:write. See fm-infra-onboarding/docs/security-model.md.
+  # The ONLY job that runs `yarn install`. Yarn 4.17 skips dependency
+  # lifecycle scripts by default and this repo enables none. `test`,
+  # `release`, `publish-openvsx` and `publish-marketplace` restore this job's
+  # output from cache and never install, so the jobs holding contents:write
+  # or id-token:write stay clear of a postinstall even if one is enabled
+  # later.
+  # See fm-infra-onboarding/docs/security-model.md.
   install:
     name: Install
     runs-on: ubuntu-slim
@@ -122,7 +122,7 @@ jobs:
     needs: test
     runs-on: ubuntu-slim
     permissions:
-      contents: write # the one credential in this workflow, and only here
+      contents: write # the one repo-write credential in this workflow, and only here
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -216,10 +216,16 @@ jobs:
 
   # Separate from `release` for one reason: that job holds `contents: write`,
   # and the publish token must never sit in the same job as a credential that
-  # can write to the repo. It builds nothing and needs no dependency tree.
+  # can write to the repo. It builds nothing. It restores the install job's
+  # tree only to run ovsx.
   #
-  # The `publish` environment is where OVSX_PAT lives. Put required reviewers
-  # on it to hold a release for a human before it reaches Open VSX.
+  # Open VSX trusted publishing. The registration for fortmesa.saferoom names
+  # fortmesa/fmmcp-local, release.yml and the `publish` environment, so the
+  # registry takes an OIDC token only from a release.yml job running in that
+  # environment, and this is the only one. It trades that token for a publish
+  # token that expires within minutes. The registration does not check the
+  # ref, so limit the environment's deployment tags to v*. Put required
+  # reviewers on it to hold a release for a human before it reaches Open VSX.
   publish-openvsx:
     name: Publish to Open VSX
     needs: release
@@ -227,13 +233,24 @@ jobs:
     environment: publish
     permissions:
       contents: read
+      id-token: write # ovsx trades this run's OIDC token for an Open VSX publish token
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
 
-      - name: Install dependencies
-        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" install --immutable
+      # Restored, not installed. The runner hands every step of this job the
+      # OIDC request token, so no install-time code may run here.
+      - name: Restore the dependency tree from install
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .pnp.cjs
+            .pnp.loader.mjs
+            .yarn/install-state.gz
+            .yarn/unplugged
+          key: pnp-${{ github.sha }}
+          fail-on-cache-miss: true
 
       - name: Fetch the artifacts built by the release job
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -250,10 +267,99 @@ jobs:
           echo "VSIX=$VSIX" >> "$GITHUB_ENV"
           ls -la "$VSIX"
 
-      # --skip-duplicate so re-running a failed release does not die on a
-      # version Open VSX already accepted. ovsx reads OVSX_PAT from the
-      # environment; it has no --pat flag on publish.
+      # --trusted-publishing makes ovsx stop with an OIDC error when the job
+      # has no ID token, instead of going looking for a PAT. Never set
+      # OVSX_PAT on this step. ovsx uses a PAT ahead of trusted publishing
+      # whenever one is set. --skip-duplicate so re-running a failed release
+      # does not die on a version Open VSX already accepted.
       - name: Publish to Open VSX
+        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" ovsx publish "$VSIX" --trusted-publishing --skip-duplicate
+
+  # VS Code Marketplace, through Microsoft Entra ID. Kept out of `release`
+  # for the same reason as publish-openvsx, and like it, builds nothing.
+  #
+  # In Azure, a user-assigned managed identity holds a federated credential
+  # for the subject
+  #   repo:fortmesa@54282063/fmmcp-local@1357391000:environment:publish
+  # This repo issues immutable OIDC subjects, so the subject carries the org
+  # and repo ids next to their names. The credential checks only the
+  # environment, so the environment's deployment rule is what limits this
+  # job to release tags. AZURE_CLIENT_ID and AZURE_TENANT_ID are variables
+  # on that environment.
+  #
+  # On the Marketplace, the identity is a Contributor on the fortmesa
+  # publisher. Members -> Add takes the id the profile step below prints.
+  publish-marketplace:
+    name: Publish to VS Code Marketplace
+    needs: release
+    runs-on: ubuntu-slim
+    environment: publish
+    permissions:
+      contents: read
+      id-token: write # az login trades this run's OIDC token for an Entra token
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      # Restored, not installed. The runner hands every step of this job the
+      # OIDC request token, so no install-time code may run here.
+      - name: Restore the dependency tree from install
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .pnp.cjs
+            .pnp.loader.mjs
+            .yarn/install-state.gz
+            .yarn/unplugged
+          key: pnp-${{ github.sha }}
+          fail-on-cache-miss: true
+
+      - name: Fetch the artifacts built by the release job
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Locate the VSIX
+        run: |
+          set -eu
+          VERSION="${GITHUB_REF_NAME#v}"
+          VSIX="release-assets/FortMesa-Saferoom-${VERSION}.vsix"
+          test -f "$VSIX" || { echo "FATAL - '$VSIX' was not in the release artifacts"; exit 1; }
+          echo "VSIX=$VSIX" >> "$GITHUB_ENV"
+          ls -la "$VSIX"
+
+      # azure/login is not on this org's Action allowlist, so this step does
+      # the token exchange itself with the Azure CLI that ubuntu-slim ships.
+      # vsce cannot read a GitHub OIDC token. Its --azure-credential falls
+      # through to the Azure CLI login made here.
+      - name: Sign in to Azure as the publisher identity
         env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" ovsx publish "$VSIX" --skip-duplicate
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          : "${AZURE_CLIENT_ID:?AZURE_CLIENT_ID is not set on the publish environment}"
+          : "${AZURE_TENANT_ID:?AZURE_TENANT_ID is not set on the publish environment}"
+          TOKEN=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r .value)
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = null ]; then
+            echo "FATAL - GitHub returned no OIDC token"
+            exit 1
+          fi
+          az login --service-principal -u "$AZURE_CLIENT_ID" -t "$AZURE_TENANT_ID" \
+            --federated-token "$TOKEN" --allow-no-subscriptions > /dev/null
+
+      # The Marketplace knows this identity only by its Azure DevOps profile
+      # id. Members -> Add on the publisher accepts nothing else, not the
+      # client, object or resource id. This call creates the profile the
+      # first time it runs, so the first release prints the id and then fails
+      # to publish. Add the id under Members and re-run the failed job.
+      - name: Print the identity's Marketplace profile id
+        run: az rest -u https://app.vssps.visualstudio.com/_apis/profile/profiles/me --resource 499b84ac-1321-427f-aa17-267ca6975798 --query id -o tsv
+
+      # --skip-duplicate so re-running a failed release does not die on a
+      # version the Marketplace already accepted.
+      - name: Publish to the VS Code Marketplace
+        run: node "$(ls .yarn/releases/yarn-*.cjs | head -1)" vsce publish --packagePath "$VSIX" --azure-credential --skip-duplicate

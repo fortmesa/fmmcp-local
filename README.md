@@ -75,14 +75,15 @@ other and by every running agent.
 
 ## Install
 
-Each release publishes the extension to **Open VSX** and attaches three
-artifacts to its [GitHub Release](https://github.com/fortmesa/fmmcp-local/releases):
+Each release publishes the extension to the **VS Code Marketplace** and
+**Open VSX**, and attaches three artifacts to its
+[GitHub Release](https://github.com/fortmesa/fmmcp-local/releases):
 
-| Artifact                           | For                                                                                                     |
-| :--------------------------------- | :------------------------------------------------------------------------------------------------------ |
-| `FortMesa-Saferoom-<version>.vsix` | VS Code, Cursor — install from Open VSX, or sideload the file (self-contained: no repo checkout needed) |
-| `FortMesa-Saferoom-<version>.mcpb` | Claude Desktop and other MCP Bundle hosts                                                               |
-| `fmmcp-local-<version>.tgz`        | The CLI on its own (`fmmcp-local`)                                                                      |
+| Artifact                           | For                                                                                                                       |
+| :--------------------------------- | :------------------------------------------------------------------------------------------------------------------------ |
+| `FortMesa-Saferoom-<version>.vsix` | VS Code, Cursor. Install from the Marketplace or Open VSX, or sideload the file (self-contained: no repo checkout needed) |
+| `FortMesa-Saferoom-<version>.mcpb` | Claude Desktop and other MCP Bundle hosts                                                                                 |
+| `fmmcp-local-<version>.tgz`        | The CLI on its own (`fmmcp-local`)                                                                                        |
 
 Then open the **FortMesa Saferoom** view in the activity bar and choose **Sign
 In**. Sign-in is OAuth 2.0 with PKCE against FortMesa's identity provider, and
