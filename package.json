@@ -1,11 +1,11 @@
 {
   "name": "saferoom",
-  "version": "0.9.120",
+  "version": "0.9.123",
   "description": "Environment, scope, and credential management for the FortMesa MCP proxy — across Claude Code, VS Code, Cursor, Codex, and Antigravity.",
   "displayName": "FortMesa Saferoom",
   "publisher": "fortmesa",
   "license": "Apache-2.0",
-  "icon": "media/logo.png",
+  "icon": "media/icon.png",
   "categories": [
     "Other"
   ],
