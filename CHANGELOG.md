@@ -1,3 +1,51 @@
+## [2026-10-26T17:59:24Z] Release: fmdev-116-notices
+
+- User: Matthew Fisch + Claude Code (FMDEV-116)
+- Version: 0.9.3 (unchanged; 0.9.3 was never published)
+- Commit: (this commit)
+
+### What's New
+
+No user-facing change.
+
+### Developer Notes
+
+- **Fix**: `THIRD-PARTY-NOTICES.md` regenerated for the zod 4.6.7 bump; the only change is `zod@4.6.5` → `zod@4.6.7`.
+  The stale file failed master pipeline build 127 (7c20a9a). Nothing was published from that build.
+- **Gates**: `yarn notices:check` now runs in `yarn test` and in the pipeline validate step, so a dependency bump that
+  doesn't regenerate the notices fails before merge rather than only at packaging time.
+- **Verification**: before regenerating, `yarn test` failed (exit 1) on the new notices check, with all 736 unit tests run:
+  735 pass, 0 fail, 1 skipped. After regenerating it passes (exit 0): 736 tests, 735 pass, 0 fail, 1 skipped; notices up to date.
+
+## [2026-10-26T15:26:25Z] Release: fmdev-116-zod
+
+- User: Matthew Fisch + Claude Code (FMDEV-116)
+- Version: 0.9.3
+- Commit: (this commit)
+
+### What's New
+
+#### Security update for input validation
+
+**Saferoom now ships an updated input-validation library (zod 4.6.7), closing GHSA-mrhx-c7xc-m3w5.**
+No change to how you use it. Update to this version to pick up the fix.
+
+**Update your Node.js too.** The extension runs on your own Node, not one we bundle, so please move
+to Node 24.22.1 or later. Earlier versions are affected by CVE-2026-111497 ("HTTP2Shell").
+
+### Developer Notes
+
+- **Dependencies**: FMDEV-116 raised the `zod` floor to `^4.6.7`; every `zod` entry in `yarn.lock`
+  (including the copy pulled in via `@modelcontextprotocol/*`) resolves to 4.6.7.
+- **Gates**: `yarn test` (format check, lint, clean rebuild, all suites): 736 tests, 735 pass, 0 fail,
+  1 skipped.
+
+### Known gaps
+
+- The VSIX package build was not run in the sandbox; the PO builds it with `yarn package:ext:prod`.
+
+---
+
 ## [2026-09-30T17:37:59Z] Release: fix/MFDV-581-statusbar-auth
 
 - User: Matthew Fisch + Claude Code (MFDV-581)

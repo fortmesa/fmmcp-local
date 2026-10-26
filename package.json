@@ -1,6 +1,6 @@
 {
   "name": "saferoom",
-  "version": "0.9.123",
+  "version": "0.9.130",
   "description": "Environment, scope, and credential management for the FortMesa MCP proxy — across Claude Code, VS Code, Cursor, Codex, and Antigravity.",
   "displayName": "FortMesa Saferoom",
   "publisher": "fortmesa",
@@ -37,7 +37,7 @@
     "type-check": "tsc --noEmit",
     "test:hot-reload": "node scripts/hot-reload-test.mjs",
     "test:unit": "yarn clean && yarn build && yarn node --test \"dist/**/*.test.js\" \"test/**/*.test.mjs\" \"src/**/*.test.mjs\"",
-    "test": "yarn format:check && yarn lint && yarn test:unit",
+    "test": "yarn format:check && yarn lint && yarn test:unit && yarn notices:check",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix --max-warnings 0",
     "format": "prettier --write .",
@@ -57,7 +57,7 @@
     "@modelcontextprotocol/client": "^2.3.1",
     "@modelcontextprotocol/server": "^2.3.1",
     "smol-toml": "^1.9.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",

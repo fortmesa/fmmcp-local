@@ -984,7 +984,7 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
 IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-## zod@4.6.5
+## zod@4.6.7
 
 - **License**: MIT
 - **Copyright / Author**: Colin McDonnell <zod@colinhacks.com>
