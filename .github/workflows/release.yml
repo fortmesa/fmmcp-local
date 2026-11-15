@@ -58,6 +58,11 @@ jobs:
   # See fm-infra-onboarding/docs/security-model.md.
   install:
     name: Install
+    # Public repo only. The private repo (fortmesa-private/fmmcp-local) carries
+    # this file and the same v* tags, and a tag there must not cut a GitHub
+    # Release or try to publish. Every other job needs this one, so they all
+    # skip with it (FMDEV-519).
+    if: github.repository == 'fortmesa/fmmcp-local'
     runs-on: ubuntu-slim
     permissions:
       contents: read

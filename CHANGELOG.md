@@ -1,3 +1,63 @@
+## [2026-11-15] Release: FMDEV-602-validate-no-git
+
+- User: Matthew Fisch + Claude Code (FMDEV-602)
+- Version: 0.9.3 (unchanged; test-only change)
+- Commit: (this commit)
+
+### What's New
+
+No user-facing change. Fixes the Bitbucket Validate step, which failed on pipeline #144 and on master after the
+FMDEV-519 merge.
+
+### Developer Notes
+
+- **Cause**: `test/scripts/github-migration.test.mjs`'s publish-snapshot build test runs `git init`; the Validate
+  image `node:24-trixie-slim` has no git (Bitbucket clones outside the build container) -> `spawn git ENOENT`,
+  744 tests / 741 pass / 1 fail.
+- **Fix**: the test probes for git and skips with a stated reason when it is absent, the same treatment the
+  unzip cross-check already gets. It still runs wherever git exists (dev boxes, GitHub runners); the manual
+  publish step installs git and runs `publish-snapshot.sh` with its own leak checks. Pipeline steps unchanged;
+  only the header comment is updated.
+- **Gate**: without git, master is red (1 fail) and this branch is green (741 pass, 3 skipped); with git, 743 pass,
+  1 skipped. `yarn test` (format, lint, unit, notices) and type-check pass.
+
+## [2026-11-14T00:11:10Z] Release: FMDEV-519-github-migration
+
+- User: Matthew Fisch + Claude Code (FMDEV-519)
+- Version: 0.9.3 (unchanged; no user-facing change)
+- Commit: (this commit)
+- **Merge order: merge after fm-devcontainer FMDEV-515** (`feat/FMDEV-515-github-migration`), which carries the
+  shared `remote-dual.sh` / `remote-drift.sh --repo fmmcp-local` tooling this release's guide relies on.
+
+### What's New
+
+No user-facing change. Groundwork for moving the private repo from Bitbucket to GitHub
+`fortmesa-private/fmmcp-local`; the public repo and how it is published stay the same.
+
+### Developer Notes
+
+- **One copy of the public-snapshot rules**: `scripts/release/publish-snapshot.sh` (build, check, next-version).
+  The Bitbucket manual publish step now builds through it; built from 95e2080 at 0.9.130 it reproduces the
+  published v0.9.130 tree exactly. Private-only files (the new workflows, the script, its test, `.agent/`) are
+  stripped from every snapshot, and the snapshot is refused if one slips through.
+- **Private-repo workflows, all off**: `verify.yml` (CI on the GitHub trunk `main`) and `publish-public.yml`
+  (publisher after switchover, run from `main`: version = highest public tag + 1, fast-forward only). Each needs
+  a repository variable the PO sets and runs only in `fortmesa-private/fmmcp-local`. Actions pinned by SHA; no
+  AWS. No server-side mirror (T4 ruling, 14 Nov): agents fast-forward `integration/bitbucket-master` and the PO
+  merges it into `main` by PR, merge commits only.
+- **`release.yml` runs only in `fortmesa/fmmcp-local`**, so a tag in the private repo cuts nothing.
+  This one-line guard is the only change the public repo sees.
+- **Guide**: `.agent/GITHUB-MIGRATION.md`, updated to the T4 ruling: `main` is the GitHub trunk, created by the
+  PO from `integration/bitbucket-master`; the old private `main` (public-snapshot ledger) becomes
+  `public-snapshot` in the PO sitting; history preserved; merge commits only. Includes build-up, parallel period
+  checks, switchover, verify, tear-down, rollback and the Bitbucket inventory. D3/D4 are with the PO.
+- **Verification**: `yarn type-check`, `yarn test` (format check, lint, clean rebuild, all suites) and `yarn notices:check`
+  pass: 744 tests, 743 pass, 0 fail, 1 skipped.
+  `test/scripts/github-migration.test.mjs` 8/8 (seen red: a removed guard or gate fails 2 of 7; trunk `master` or
+  a mirror file fails 2 of 8). Offline harness (local bare repos, real runs of the publish scripts, YAML parsed):
+  30/30; seen red: both publishers refuse a leaked file. Credential scan of every ref and tag (196 commits plus
+  the LFS objects): 0 true positives.
+
 ## [2026-10-26T17:59:24Z] Release: fmdev-116-notices
 
 - User: Matthew Fisch + Claude Code (FMDEV-116)
