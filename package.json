@@ -1,6 +1,6 @@
 {
   "name": "saferoom",
-  "version": "0.9.150",
+  "version": "0.9.157",
   "description": "Environment, scope, and credential management for the FortMesa MCP proxy — across Claude Code, VS Code, Cursor, Codex, and Antigravity.",
   "displayName": "FortMesa Saferoom",
   "publisher": "fortmesa",
@@ -124,6 +124,16 @@
         "title": "Settings",
         "category": "FortMesa",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "fortmesa.signOut",
+        "title": "Sign Out of the Active Environment",
+        "category": "FortMesa"
+      },
+      {
+        "command": "fortmesa.switchEnvironment",
+        "title": "Switch Environment",
+        "category": "FortMesa"
       },
       {
         "command": "fortmesa.openEventViewer",

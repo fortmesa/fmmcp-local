@@ -44,7 +44,7 @@ const {
   mergeToolLists,
   augmentGatewayTool,
 } = await import('../../dist/registry/documents-mode.js');
-const { loadConfig, saveConfig } = await import('../../dist/registry/config.js');
+const { loadConfig, loadConfigWithWarnings, saveConfig } = await import('../../dist/registry/config.js');
 const { configFromSnapshot, snapshotFromConfig } = await import('../../dist/extension/settings-sync.js');
 
 const DOC_NAMES = ['grc_documents_read', 'grc_documents_write', 'grc_documents_delete'];
@@ -242,11 +242,19 @@ test('a pre-0.7.9 config.json with no documentsMode still loads, defaulting to L
   });
 });
 
-test('an unrecognised documentsMode makes the file INVALID rather than silently guessing', async () => {
+// FMDEV-879 (PO, 24 Nov): one invalid field must not make the whole config
+// unloadable. An unrecognised mode is still never guessed SILENTLY: it falls
+// back to the documented default (Local-file, what every release before
+// 0.7.9 hard-coded) and the load reports a warning the user sees.
+test('an unrecognised documentsMode falls back to Local-file mode with a visible warning, not silently', async () => {
   await withIsolatedFmcodeDir(async (dir) => {
     const config = await loadConfig();
     await writeFile(join(dir, 'config.json'), JSON.stringify({ ...config, documentsMode: 'cloudy' }), 'utf-8');
-    await assert.rejects(loadConfig(), /documentsMode/);
+    const { config: loaded, warnings } = await loadConfigWithWarnings();
+    assert.equal(loaded.documentsMode, 'local');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /documentsMode/);
+    assert.match(warnings[0], /cloudy/);
   });
 });
 

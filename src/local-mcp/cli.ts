@@ -16,7 +16,7 @@ import { connectGateway, startProxy } from './proxy.js';
 import { createEventClient } from './event-client.js';
 import { emitExpiredEvent, emitRefreshEvent } from './auth-events.js';
 import type { ConnectedProxy } from './proxy.js';
-import { loadConfig, resolveEffectiveStartup, saveConfig, watchConfig } from '../registry/config.js';
+import { loadConfig, onConfigWarnings, resolveEffectiveStartup, saveConfig, watchConfig } from '../registry/config.js';
 import { prodWarning, registerDataRegion } from '../registry/environments.js';
 import type { Config, StartupFlags } from '../registry/config.js';
 import { readCredentialsSummary, writeToken } from '../registry/credentials.js';
@@ -991,6 +991,11 @@ which environment and gateway are in effect before you start.
 `;
 
 async function main(): Promise<void> {
+  // FMDEV-879: an invalid config.json field falls back to its default
+  // rather than failing the whole load; every fallback is logged to stderr.
+  onConfigWarnings((warnings) => {
+    for (const warning of warnings) log(`config.json: ${warning}`);
+  });
   const argv = process.argv.slice(2);
   const subcommand = argv[0];
 

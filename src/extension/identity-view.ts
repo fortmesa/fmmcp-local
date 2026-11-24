@@ -17,6 +17,7 @@ import { clearCredentialAction, credentialKind } from '../registry/credential-ki
 import { environmentLabel } from '../registry/environments.js';
 import {
   expiredSessionNotice,
+  type ExpiredSessionAlternative,
   hasOAuthSignIn,
   isSessionExpired,
   type SessionRecovery,
@@ -79,6 +80,8 @@ interface ExpiredView {
   readonly actionLabel: string;
   readonly action: SessionRecovery;
   readonly detail: string;
+  /** FMDEV-879: Switch environment and Sign out, offered alongside the recovery. */
+  readonly alternatives: readonly ExpiredSessionAlternative[];
 }
 
 interface IdentityViewState {
@@ -240,6 +243,7 @@ async function buildState(): Promise<IdentityViewState> {
             actionLabel: notice.actionLabel,
             action: notice.action,
             detail: notice.detail,
+            alternatives: notice.alternatives,
           },
         }
       : {}),
@@ -250,7 +254,8 @@ type InboundMessage =
   | { readonly type: 'getState' }
   | { readonly type: 'signIn' }
   | { readonly type: 'signOut' }
-  | { readonly type: 'openTokenSettings' };
+  | { readonly type: 'openTokenSettings' }
+  | { readonly type: 'switchEnvironment' };
 
 function isInboundMessage(value: unknown): value is InboundMessage {
   return typeof value === 'object' && value !== null && 'type' in value && typeof value.type === 'string';
@@ -314,7 +319,7 @@ function renderHtml(webview: vscode.Webview, cspNonce: string): string {
   <div class="expired" id="expired" hidden>
     <div class="message" id="expiredMessage"></div>
     <div class="detail muted" id="expiredDetail"></div>
-    <div class="actions"><button id="expiredAction"></button></div>
+    <div class="actions"><button id="expiredAction"></button><span id="expiredAlternatives"></span></div>
   </div>
 
   <div class="actions" id="signedOutActions" hidden>
@@ -369,6 +374,21 @@ function renderHtml(webview: vscode.Webview, cspNonce: string): string {
     $('expiredMessage').textContent = expired ? expired.message : '';
     $('expiredDetail').textContent = expired ? expired.detail : '';
     $('expiredAction').textContent = expired ? expired.actionLabel : '';
+    // FMDEV-879: the recovery alone was a dead end for a token-only session
+    // with no new token to paste. Sign out (clears the dead credential) and
+    // Switch environment sit beside it.
+    const alternatives = $('expiredAlternatives');
+    alternatives.textContent = '';
+    for (const alt of expired ? expired.alternatives : []) {
+      const button = document.createElement('button');
+      button.className = 'secondary';
+      button.textContent = alt.action === 'sign-out' ? state.clearAction.label : alt.label;
+      if (alt.action === 'sign-out') button.title = state.clearAction.tooltip;
+      button.addEventListener('click', () => {
+        vscode.postMessage({ type: alt.action === 'sign-out' ? 'signOut' : 'switchEnvironment' });
+      });
+      alternatives.appendChild(button);
+    }
 
     $('signedOutActions').hidden = state.signedIn || !!expired;
     $('signedInActions').hidden = !state.signedIn;
@@ -483,6 +503,12 @@ export class IdentityViewProvider implements vscode.WebviewViewProvider {
         notifyIdentityChanged({ kind: 'signed-out', env });
         return;
       }
+
+      case 'switchEnvironment':
+        // Reads config.json only, so it works with an expired credential.
+        await vscode.commands.executeCommand('fortmesa.switchEnvironment');
+        await this.postState();
+        return;
 
       case 'openTokenSettings':
         // Token-only environments have no sign-in to re-run, so the recovery

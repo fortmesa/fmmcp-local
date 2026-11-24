@@ -17,7 +17,13 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadConfig, resolveEffectiveStartup } from '../../dist/registry/config.js';
+import {
+  loadConfig,
+  loadConfigWithWarnings,
+  onConfigWarnings,
+  resolveEffectiveStartup,
+  saveConfig,
+} from '../../dist/registry/config.js';
 
 /**
  * `DEFAULT_CONFIG` is intentionally not exported by config.ts (confirmed via
@@ -72,27 +78,207 @@ function noopLog() {}
 
 // --- Schema accept/reject -------------------------------------------------
 
-test('loadConfig: throws a descriptive error when scopeLock.mode is not one of single/multi/unlocked', async () => {
+// --- Tolerant load (FMDEV-879) ----------------------------------------------
+//
+// One invalid field must not make the whole config unloadable. A legacy
+// `scopeLock.mode: "locked"` (seen on a real 27 Oct config) migrates to
+// single/multi; any other invalid field falls back to its default with a
+// warning. The scope lock is a guard, so its fallback is never `unlocked`
+// unless the file itself said `unlocked`.
+
+function fileConfig(overrides = {}) {
+  return {
+    version: 1,
+    activeEnv: 'sandbox',
+    scopeLock: { mode: 'unlocked', scopes: [] },
+    environments: { sandbox: { gateway: 'http://localhost:3020/mcp' } },
+    ideSync: { claude: true, vscode: true, cursor: true, codex: true, antigravity: true, copilot: true },
+    logLevel: 'info',
+    disabledTools: [],
+    documentsMode: 'local',
+    ...overrides,
+  };
+}
+
+async function writeConfigFile(tmpDir, config) {
+  await writeFile(join(tmpDir, 'config.json'), JSON.stringify(config, null, 2), 'utf-8');
+}
+
+test('loadConfig: legacy scopeLock.mode "locked" with one scope loads as "single" and keeps every other field', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(tmpDir, fileConfig({ scopeLock: { mode: 'locked', scopes: ['fmlab2'] }, logLevel: 'debug' }));
+
+    const config = await loadConfig();
+
+    assert.deepEqual(config.scopeLock, { mode: 'single', scopes: ['fmlab2'] });
+    assert.equal(config.activeEnv, 'sandbox');
+    assert.equal(config.logLevel, 'debug');
+  });
+});
+
+test('loadConfig: legacy scopeLock.mode "locked" with several scopes loads as "multi"', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(tmpDir, fileConfig({ scopeLock: { mode: 'locked', scopes: ['a', 'b'] } }));
+
+    const config = await loadConfig();
+
+    assert.deepEqual(config.scopeLock, { mode: 'multi', scopes: ['a', 'b'] });
+  });
+});
+
+test('loadConfigWithWarnings: the legacy "locked" migration is reported as a warning', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(tmpDir, fileConfig({ scopeLock: { mode: 'locked', scopes: ['fmlab2'] } }));
+
+    const { config, warnings } = await loadConfigWithWarnings();
+
+    assert.equal(config.scopeLock.mode, 'single');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /scopeLock\.mode/);
+    assert.match(warnings[0], /locked/);
+  });
+});
+
+test('loadConfig: the migrated value is written on the next save (no write on load itself)', async () => {
   await withIsolatedFmcodeDir(async (tmpDir) => {
     const configPath = join(tmpDir, 'config.json');
-    const badConfig = {
-      version: 1,
-      activeEnv: 'sandbox',
-      scopeLock: { mode: 'bogus-mode', scopes: [] },
-      environments: { sandbox: { gateway: 'http://localhost:3020/mcp' } },
-      ideSync: { claude: true, vscode: true, cursor: true, codex: true, antigravity: true, copilot: true },
-      logLevel: 'info',
-    };
-    await writeFile(configPath, JSON.stringify(badConfig, null, 2), 'utf-8');
+    await writeConfigFile(tmpDir, fileConfig({ scopeLock: { mode: 'locked', scopes: ['fmlab2'] } }));
 
-    await assert.rejects(
-      () => loadConfig(),
-      (error) => {
-        assert.match(error.message, /Invalid config file/);
-        assert.match(error.message, /scopeLock\.mode/);
-        return true;
-      },
+    const config = await loadConfig();
+    assert.equal(JSON.parse(await readFile(configPath, 'utf-8')).scopeLock.mode, 'locked');
+
+    await saveConfig(config);
+    assert.deepEqual(JSON.parse(await readFile(configPath, 'utf-8')).scopeLock, { mode: 'single', scopes: ['fmlab2'] });
+  });
+});
+
+test('loadConfig: a garbage scopeLock.mode falls back with a warning, fails CLOSED (never "unlocked")', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(tmpDir, fileConfig({ scopeLock: { mode: 'bogus-mode', scopes: ['fmlab2'] } }));
+
+    const { config, warnings } = await loadConfigWithWarnings();
+
+    assert.deepEqual(config.scopeLock, { mode: 'single', scopes: ['fmlab2'] });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /scopeLock\.mode/);
+    assert.match(warnings[0], /bogus-mode/);
+  });
+});
+
+test('loadConfig: a garbage scopeLock.mode with no scopes stays locked (every scope refused), not unlocked', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(tmpDir, fileConfig({ scopeLock: { mode: 42, scopes: [] } }));
+
+    const config = await loadConfig();
+
+    assert.notEqual(config.scopeLock.mode, 'unlocked');
+    assert.deepEqual(config.scopeLock.scopes, []);
+    assert.equal(resolveEffectiveStartup({}, config, noopLog).scopeLocked, true);
+  });
+});
+
+test('loadConfig: a missing scopeLock fails closed with a warning', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    const raw = fileConfig();
+    delete raw.scopeLock;
+    await writeConfigFile(tmpDir, raw);
+
+    const { config, warnings } = await loadConfigWithWarnings();
+
+    assert.notEqual(config.scopeLock.mode, 'unlocked');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /scopeLock/);
+  });
+});
+
+test('loadConfig: an invalid logLevel falls back to its default; the rest of the config survives', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(
+      tmpDir,
+      fileConfig({ logLevel: 'loud', scopeLock: { mode: 'multi', scopes: ['a', 'b'] }, documentsMode: 'network' }),
     );
+
+    const { config, warnings } = await loadConfigWithWarnings();
+
+    assert.equal(config.logLevel, 'info');
+    assert.deepEqual(config.scopeLock, { mode: 'multi', scopes: ['a', 'b'] });
+    assert.equal(config.documentsMode, 'network');
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /logLevel/);
+  });
+});
+
+test('loadConfig: one invalid ideSync flag falls back alone; the other flags keep their values', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(
+      tmpDir,
+      fileConfig({
+        ideSync: { claude: false, vscode: 'yes', cursor: false, codex: true, antigravity: false, copilot: false },
+      }),
+    );
+
+    const { config, warnings } = await loadConfigWithWarnings();
+
+    assert.deepEqual(config.ideSync, {
+      claude: false,
+      vscode: true,
+      cursor: false,
+      codex: true,
+      antigravity: false,
+      copilot: false,
+    });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /ideSync\.vscode/);
+  });
+});
+
+test('loadConfig: an invalid environments entry is dropped with a warning; valid entries survive', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(
+      tmpDir,
+      fileConfig({
+        environments: { sandbox: { gateway: 'http://localhost:3020/mcp' }, broken: { gateway: '' } },
+      }),
+    );
+
+    const { config, warnings } = await loadConfigWithWarnings();
+
+    assert.deepEqual(Object.keys(config.environments), ['sandbox']);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /environments\.broken/);
+  });
+});
+
+test('loadConfig: a valid config produces no warnings', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(tmpDir, fileConfig());
+
+    const { warnings } = await loadConfigWithWarnings();
+
+    assert.deepEqual(warnings, []);
+  });
+});
+
+test('onConfigWarnings: listeners hear the warnings of a tolerant load, and stop after dispose', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeConfigFile(tmpDir, fileConfig({ logLevel: 'loud' }));
+    const heard = [];
+    const subscription = onConfigWarnings((warnings) => heard.push([...warnings]));
+
+    await loadConfig();
+    subscription.dispose();
+    await loadConfig();
+
+    assert.equal(heard.length, 1);
+    assert.match(heard[0][0], /logLevel/);
+  });
+});
+
+test('loadConfig: unparseable JSON still throws (nothing to salvage)', async () => {
+  await withIsolatedFmcodeDir(async (tmpDir) => {
+    await writeFile(join(tmpDir, 'config.json'), '{ not json', 'utf-8');
+
+    await assert.rejects(() => loadConfig());
   });
 });
 

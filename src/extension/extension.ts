@@ -25,12 +25,13 @@
 import { chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import * as vscode from 'vscode';
-import { loadConfig, watchConfig, type Config } from '../registry/config.js';
+import { getConfigPath, loadConfig, onConfigWarnings, watchConfig, type Config } from '../registry/config.js';
 import { detectCapabilities } from './fork-detect.js';
 import { disposeIdentityEvents, onIdentityChanged } from '../registry/identity-events.js';
 import { registerIdeSyncCommands, runSyncPass } from './ide-sync-commands.js';
 import { IdentityViewProvider } from './identity-view.js';
 import { registerLoginCommand } from './login-command.js';
+import { registerSessionCommands } from './session-commands.js';
 import { createLogger, errorMessage } from './logger.js';
 import { EventBus } from '../registry/events/event-bus.js';
 import { newEventId } from '../registry/events/event-record.js';
@@ -127,6 +128,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   outputChannel = channel;
   const log = createLogger(channel);
   log.info('FortMesa Saferoom activating…');
+
+  // FMDEV-879: an invalid config.json field now falls back to its default
+  // instead of making the whole config unloadable. Say so, visibly: every
+  // fallback goes to the output channel, and each distinct set is shown once
+  // per session as a warning (loadConfig runs from many places, so without
+  // the de-duplication the same notice would repeat).
+  const shownConfigWarnings = new Set<string>();
+  const configWarnings = onConfigWarnings((warnings) => {
+    for (const warning of warnings) log.warn(`config.json: ${warning}`);
+    const key = warnings.join('\n');
+    if (shownConfigWarnings.has(key)) return;
+    shownConfigWarnings.add(key);
+    const summary = warnings.length === 1 ? (warnings[0] ?? '') : `${String(warnings.length)} settings were invalid`;
+    void vscode.window
+      .showWarningMessage(
+        `Saferoom repaired its settings file: ${summary}. The rest of your settings loaded normally.`,
+        'Open config.json',
+      )
+      .then((choice) => {
+        if (choice === 'Open config.json') void vscode.window.showTextDocument(vscode.Uri.file(getConfigPath()));
+      });
+  });
+  context.subscriptions.push(configWarnings);
 
   const capabilities = detectCapabilities();
   log.info(
@@ -225,6 +249,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerIdeSyncCommands(context, repoRoot, log);
   registerSwitcherCommands(context, log, clientVersion);
   registerLoginCommand(context, log);
+  registerSessionCommands(context, log);
   registerSaferoomLauncherCommands(context, log);
   registerSaferoomSettingsCommand(context, repoRoot, log, clientVersion);
   context.subscriptions.push(

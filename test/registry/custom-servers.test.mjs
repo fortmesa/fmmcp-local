@@ -12,6 +12,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  environmentSwitchChoices,
+  unavailableEnvironments,
   isCustomEntry,
   isSelectableServer,
   mergeServerList,
@@ -20,6 +22,7 @@ import {
   SERVER_NAME_MAX,
 } from '../../dist/registry/custom-servers.js';
 import { ENVIRONMENTS, isSelectableEnv } from '../../dist/registry/environments.js';
+import { hasOAuthSignIn } from '../../dist/registry/session-status.js';
 
 const GATEWAY = 'https://mcp.acme.example/mcp';
 
@@ -280,4 +283,63 @@ test('a config.json written before this feature still loads', async () => {
     assert.equal(reloaded.environments.prod.gateway, 'https://mcp.fortmesa.com/mcp');
     assert.equal(reloaded.environments.prod.custom, undefined);
   });
+});
+
+// -- FMDEV-879: a leftover dev entry is explained, not silently refused ------
+//
+// A prod-only build keeps refusing next/latest/sandbox entries left behind by
+// a dev install (MAIN, 24 Nov: keep the guard). What changed is that the user
+// is TOLD: "next is configured but not available in this build". Before, the
+// entry was invisible in the Data region list and "Add server" refused the
+// name as a plain duplicate.
+
+test('unavailableEnvironments names configured entries this build will not select', () => {
+  const prodOnlyGate = (name) => name === 'prod';
+  const envs = {
+    prod: { gateway: 'https://mcp.fortmesa.com/mcp' },
+    next: { gateway: 'https://mcp-next.dev.fort.blue/mcp' },
+    'acme-eu': { gateway: GATEWAY, label: 'Acme EU', custom: true },
+  };
+  assert.deepEqual(unavailableEnvironments(envs, prodOnlyGate), ['next']);
+  assert.deepEqual(unavailableEnvironments(envs, isSelectableEnv), [], 'a normal build selects them all');
+});
+
+test('adding a server whose name is a hidden leftover says why, and points at the dev build', () => {
+  assert.throws(
+    () => normalizeCustomServer({ name: 'next', gateway: GATEWAY }, ['prod', 'next'], ['next']),
+    (error) => {
+      assert.match(error.message, /"next" is configured but not available in this build/);
+      assert.match(error.message, /dev build/);
+      assert.doesNotMatch(error.message, /already exists/);
+      return true;
+    },
+  );
+});
+
+test('environmentSwitchChoices: every selectable environment but the active one, leftovers excluded', () => {
+  const prodOnlyGate = (name) => name === 'prod';
+  const envs = {
+    prod: { gateway: 'https://mcp.fortmesa.com/mcp' },
+    next: { gateway: 'https://mcp-next.dev.fort.blue/mcp' },
+    'acme-eu': { gateway: GATEWAY, label: 'Acme EU', custom: true },
+  };
+  const names = (rows) => rows.map((r) => r.name);
+  assert.deepEqual(names(environmentSwitchChoices(envs, 'acme-eu', prodOnlyGate)), ['prod']);
+  assert.ok(names(environmentSwitchChoices(envs, 'prod', prodOnlyGate)).includes('acme-eu'));
+  assert.ok(!names(environmentSwitchChoices(envs, 'prod', prodOnlyGate)).includes('next'));
+});
+
+// -- FMDEV-879: a user entry named like a built-in MERGES with it -------------
+//
+// A config.json from 27 Oct carried `next: { gateway }` only. The built-in's
+// api, label and sign-in (clientId, read from ENVIRONMENTS, never config) must
+// survive; only the gateway is overridden.
+
+test('a gateway-only config entry for a built-in keeps the built-in api, label and sign-in', () => {
+  const rows = mergeServerList({ next: { gateway: 'https://mcp-next.dev.fort.blue/mcp' } });
+  const next = rows.find((r) => r.name === 'next');
+  assert.ok(next !== undefined);
+  assert.equal(next.label, ENVIRONMENTS.next.label);
+  assert.equal(next.api, ENVIRONMENTS.next.api);
+  assert.equal(hasOAuthSignIn('next'), true, 'clientId comes from the built-in, not the config entry');
 });

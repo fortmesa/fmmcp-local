@@ -5,6 +5,8 @@
 **Repository**: `fortmesa/fmmcp-local`
 **Role**: Client-side FortMesa MCP — Saferoom VSIX + Local MCP Proxy
 
+**Branch naming and lifecycle:** follow fm-devcontainer [docs/BRANCH-CONVENTIONS.md](https://bitbucket.org/fortmesa/fm-devcontainer/src/master/docs/BRANCH-CONVENTIONS.md), the standard for every FortMesa repo (adopted by the PO 18 Nov 2026). Pipeline-owned exception: `main` is the public-mirror snapshot line the pipeline makes (`bitbucket-pipelines.yml`, "publish a snapshot of master to the public GitHub mirror"); it shares no history with `master`, and no branch sweep or clean-up ever touches it.
+
 ## Vision
 
 See [VISION.md](../fmmcp-gw/VISION.md) in the `fmmcp-gw` repo (private) for the full architecture vision, component inventory, and design decisions.

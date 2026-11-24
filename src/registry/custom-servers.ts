@@ -82,6 +82,7 @@ export function isCustomEntry(entry: { custom?: boolean | undefined } | undefine
 export function normalizeCustomServer(
   input: CustomServerInput,
   existingNames: readonly string[] = [],
+  unavailableNames: readonly string[] = [],
 ): { key: string; entry: CustomServerEntry } {
   const label = input.name.trim();
   if (label === '') throw new Error('Give the server a name.');
@@ -92,6 +93,15 @@ export function normalizeCustomServer(
   const key = slugifyServerName(label);
   if (key === '') {
     throw new Error(`"${label}" has no letters or digits to build a name from. Try something like "Acme EU".`);
+  }
+  if (unavailableNames.includes(key)) {
+    // FMDEV-879: a next/latest/sandbox entry left by a dev install. This build
+    // will not select it (that guard stays), but "already exists" told the
+    // user nothing about why the name was taken or what to do.
+    throw new Error(
+      `"${key}" is configured but not available in this build. Install the dev build of Saferoom to use it, ` +
+        'or pick another name.',
+    );
   }
   if (Object.hasOwn(ENVIRONMENTS, key)) {
     throw new Error(`"${label}" collides with the built-in environment "${key}". Pick another name.`);
@@ -178,4 +188,35 @@ export function isSelectableServer(
   isSelectableBuiltIn: (name: string) => boolean,
 ): boolean {
   return isSelectableBuiltIn(env) || isCustomEntry(configEnvironments[env]);
+}
+
+/**
+ * Configured environments this build will not select (FMDEV-879): in a
+ * prod-only build, the next/latest/sandbox entries a dev install left in
+ * config.json. The guard that refuses them stays; this list is what lets the
+ * Settings panel SAY so instead of hiding them without a word.
+ */
+export function unavailableEnvironments(
+  configEnvironments: Readonly<Record<string, { custom?: boolean | undefined }>>,
+  isSelectableBuiltIn: (name: string) => boolean,
+): string[] {
+  return Object.keys(configEnvironments).filter(
+    (name) => !isSelectableServer(name, configEnvironments, isSelectableBuiltIn),
+  );
+}
+
+/**
+ * The environments a user can switch to from where they are (FMDEV-879's
+ * "Switch environment"): the Data region list, minus the active one, minus
+ * anything this build refuses. Needs no credential, so it works signed out
+ * or with an expired session.
+ */
+export function environmentSwitchChoices(
+  configEnvironments: Parameters<typeof mergeServerList>[0],
+  activeEnv: string,
+  isSelectableBuiltIn: (name: string) => boolean,
+): ServerListEntry[] {
+  return mergeServerList(configEnvironments).filter(
+    (row) => row.name !== activeEnv && isSelectableServer(row.name, configEnvironments, isSelectableBuiltIn),
+  );
 }

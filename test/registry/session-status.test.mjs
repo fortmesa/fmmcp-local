@@ -100,3 +100,31 @@ test('the status bar gains an expiry hint driven from the same notice', async ()
   assert.match(bar, /setSessionExpired\(auth\.expired/, 'the controller drives the hint from the auth state');
   assert.match(bar, /readAuthState/, 'the expired fact comes from the stored credential, after a refresh attempt');
 });
+
+// -- FMDEV-879: an expired session always has a way out -----------------------
+//
+// PO live test, 0.9.150: an expired token-only session offered only "Open
+// Settings › Advanced". There was no Sign out (the expired state hid it) and
+// no route to another environment. Both recovery kinds now also offer
+// "Switch environment" and clearing the dead credential.
+
+test('an expired token-only session also offers Switch environment and Sign out', () => {
+  const notice = expiredSessionNotice('sandbox');
+  assert.equal(notice.actionLabel, 'Open Settings › Advanced');
+  const actions = notice.alternatives.map((a) => a.action);
+  assert.deepEqual(actions, ['switch-environment', 'sign-out']);
+  assert.equal(notice.alternatives[0].label, 'Switch environment');
+  assert.equal(notice.alternatives[1].label, 'Sign out');
+});
+
+test('an expired sign-in session offers the same two alternatives', () => {
+  const notice = expiredSessionNotice('next');
+  assert.deepEqual(
+    notice.alternatives.map((a) => a.action),
+    ['switch-environment', 'sign-out'],
+  );
+});
+
+test('the expired status-bar hint mentions switching environment', () => {
+  assert.match(expiredSessionNotice('sandbox').statusBarTooltip, /switch environment/i);
+});

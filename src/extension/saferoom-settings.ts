@@ -20,8 +20,9 @@ import {
   ENVIRONMENTS,
   environmentChoices,
   environmentLabel,
+  isSelectableEnv,
 } from '../registry/environments.js';
-import { mergeServerList, SERVER_NAME_MAX } from '../registry/custom-servers.js';
+import { mergeServerList, SERVER_NAME_MAX, unavailableEnvironments } from '../registry/custom-servers.js';
 import { readRegionCredentialState, regionChipLabel, type RegionCredentialState } from '../registry/region-identity.js';
 import { agentRowLabels, type AgentChip } from '../registry/agent-status.js';
 import {
@@ -149,6 +150,13 @@ interface TokenEnvChoice {
 interface SaferoomSettingsState {
   readonly activeEnv: string;
   readonly environments: readonly EnvironmentEntry[];
+  /**
+   * Configured environments this build will not select (FMDEV-879): a
+   * next/latest/sandbox entry a dev install left in a prod build's
+   * config.json. Shown as a note so the user learns why it is missing and
+   * that the dev build has it.
+   */
+  readonly unavailableEnvironments: readonly string[];
   /** Every CONFIGURED environment, active first — seeding credentials for a non-active region is otherwise unreachable. */
   readonly tokenEnvironments: readonly TokenEnvChoice[];
   readonly agents: readonly AgentEntry[];
@@ -370,6 +378,7 @@ async function buildState(
         };
       }),
     ),
+    unavailableEnvironments: unavailableEnvironments(config.environments, isSelectableEnv),
     agents: await buildAgentEntries(config.ideSync),
     disabledTools: config.disabledTools,
     allTools: tools,
@@ -533,6 +542,7 @@ function renderHtml(webview: vscode.Webview, cspNonce: string): string {
         <button id="envAdvanced" class="icon-button" title="Show all data regions and non-production environments">&#9881; Advanced</button>
       </div>
       <div class="region-list" id="regionList"></div>
+      <div class="status" id="unavailableEnvs" hidden></div>
       <div class="env-preview" id="envPreview"></div>
       <details class="advanced" id="addServer">
         <summary>Add a server</summary>
@@ -623,7 +633,21 @@ function renderHtml(webview: vscode.Webview, cspNonce: string): string {
       : '';
   }
 
+  function renderUnavailable(state) {
+    const note = document.getElementById('unavailableEnvs');
+    const names = state.unavailableEnvironments || [];
+    note.hidden = names.length === 0;
+    note.textContent =
+      names.length === 0
+        ? ''
+        : names.map((n) => '"' + n + '"').join(', ') +
+          (names.length === 1 ? ' is' : ' are') +
+          ' configured but not available in this build. Install the dev build of Saferoom to use ' +
+          (names.length === 1 ? 'it.' : 'them.');
+  }
+
   function renderEnvSelect(state) {
+    renderUnavailable(state);
     const envSelect = document.getElementById('envSelect');
     envSelect.innerHTML = '';
     for (const env of visibleEnvironments(state)) {
@@ -1101,7 +1125,12 @@ export function registerSaferoomSettingsCommand(
 ): void {
   sectionMemory = context.globalState;
   context.subscriptions.push(
-    vscode.commands.registerCommand('fortmesa.openSaferoomSettings', () => {
+    vscode.commands.registerCommand('fortmesa.openSaferoomSettings', async (options?: unknown) => {
+      // FMDEV-879: `{ section: 'dataRegion' }` opens the panel with that
+      // section expanded, which is what "Switch environment" lands on.
+      if (isRecord(options) && isSettingsSectionId(options.section)) {
+        await sectionMemory?.update(SETTINGS_SECTIONS_KEY, withSectionOpen(currentSections(), options.section, true));
+      }
       if (activePanel !== undefined) {
         activePanel.reveal();
         void postFreshState(activePanel, clientVersion, log);
@@ -1136,6 +1165,10 @@ export function registerSaferoomSettingsCommand(
       log.info('fortmesa.openSaferoomSettings: opened the Saferoom Settings webview');
     }),
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 /** Push a fresh state snapshot to the Saferoom Settings webview if it's currently open — called from `extension.ts`'s `applyConfig` so an external config.json change (CLI, hand-edit) keeps the panel in sync while it's open. No-op if the panel isn't open. */

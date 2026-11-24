@@ -5,7 +5,13 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_ENV, ENVIRONMENTS, gatewayDefaults, isSelectableEnv } from './environments.js';
-import { isCustomEntry, isSelectableServer, normalizeCustomServer, type CustomServerInput } from './custom-servers.js';
+import {
+  isCustomEntry,
+  isSelectableServer,
+  normalizeCustomServer,
+  unavailableEnvironments,
+  type CustomServerInput,
+} from './custom-servers.js';
 import { DEFAULT_DOCUMENTS_MODE } from './documents-mode.js';
 
 /**
@@ -121,24 +127,207 @@ function isNodeErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error;
 }
 
-/** Parse+validate raw JSON text against the config schema. Throws with a zod-issue-list message on failure. */
-function parseConfig(raw: string, path: string): Config {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A short, log-safe rendering of an offending value for a warning line. */
+function describeValue(value: unknown): string {
+  if (value === undefined) return 'missing';
+  const rendered = JSON.stringify(value);
+  return rendered.length > 60 ? `${rendered.slice(0, 57)}...` : rendered;
+}
+
+/**
+ * `scopeLock.mode` values that some earlier writer left on disk, mapped by the
+ * same rule as an unknown value. The schema enum has been
+ * `single|multi|unlocked` since the registry was created (ce3e385), but the UI
+ * called a restricted set "locked" until ee6f0f7, and a real config.json from
+ * 27 Oct carried `mode: "locked"` (FMDEV-879). Listed so the warning can say
+ * "legacy" rather than "invalid".
+ */
+const LEGACY_SCOPE_LOCK_MODES: ReadonlySet<string> = new Set(['locked']);
+
+/**
+ * Salvage `scopeLock` field by field. The scope lock is a guard, so every
+ * fallback fails CLOSED: an unreadable mode becomes `single` (one listed
+ * scope) or `multi` (zero or several), and an unreadable scope list becomes
+ * empty, which `resolveEffectiveStartup` turns into "every scope refused".
+ * The result is `unlocked` only when the file itself said `unlocked`.
+ */
+function salvageScopeLock(raw: unknown, warnings: string[]): Config['scopeLock'] {
+  if (!isRecord(raw)) {
+    warnings.push(
+      `scopeLock: ${describeValue(raw)} is not a scope lock; no scope is accessible until you choose scopes again`,
+    );
+    return { mode: 'multi', scopes: [] };
+  }
+
+  const modeResult = scopeLockModeSchema.safeParse(raw.mode);
+  const scopesResult = z.array(z.string()).safeParse(raw.scopes);
+  const scopes = scopesResult.success ? scopesResult.data : [];
+  if (!scopesResult.success && !(modeResult.success && modeResult.data === 'unlocked')) {
+    warnings.push(
+      `scopeLock.scopes: ${describeValue(raw.scopes)} is not a list of scope names; ` +
+        'no scope is accessible until you choose scopes again',
+    );
+  }
+  if (modeResult.success) return { mode: modeResult.data, scopes };
+
+  const mode = scopes.length === 1 ? 'single' : 'multi';
+  const legacy = typeof raw.mode === 'string' && LEGACY_SCOPE_LOCK_MODES.has(raw.mode);
+  warnings.push(
+    legacy
+      ? `scopeLock.mode: legacy value ${describeValue(raw.mode)} read as "${mode}"; it is saved as "${mode}" on the next settings change`
+      : `scopeLock.mode: ${describeValue(raw.mode)} is not one of single|multi|unlocked; read as "${mode}", ` +
+          'so only the listed scopes are accessible',
+  );
+  return { mode, scopes };
+}
+
+/** Salvage `environments` entry by entry: an invalid entry is dropped, the rest survive. */
+function salvageEnvironments(raw: unknown, warnings: string[]): Config['environments'] {
+  if (!isRecord(raw)) {
+    warnings.push(`environments: ${describeValue(raw)} is not a server list; the built-in servers are used`);
+    return gatewayDefaults();
+  }
+  const environments: Config['environments'] = {};
+  for (const [name, entry] of Object.entries(raw)) {
+    const result = environmentEntrySchema.safeParse(entry);
+    if (result.success) {
+      environments[name] = result.data;
+    } else {
+      warnings.push(`environments.${name}: ${describeValue(entry)} is not a valid server entry; it is ignored`);
+    }
+  }
+  if (Object.keys(environments).length === 0) {
+    warnings.push('environments: no valid server entry is left; the built-in servers are used');
+    return gatewayDefaults();
+  }
+  return environments;
+}
+
+/** Salvage `ideSync` flag by flag: an invalid flag takes its default, the others keep their values. */
+function salvageIdeSync(raw: unknown, warnings: string[]): Config['ideSync'] {
+  if (!isRecord(raw)) {
+    warnings.push(`ideSync: ${describeValue(raw)} is not a set of IDE flags; every IDE is synced`);
+    return { ...DEFAULT_CONFIG.ideSync };
+  }
+  const ideSync = { ...DEFAULT_CONFIG.ideSync };
+  for (const key of Object.keys(ideSyncSchema.shape) as (keyof Config['ideSync'])[]) {
+    const result = ideSyncSchema.shape[key].safeParse(raw[key]);
+    if (result.success) {
+      ideSync[key] = result.data;
+    } else {
+      warnings.push(`ideSync.${key}: ${describeValue(raw[key])} is not true or false; using ${String(ideSync[key])}`);
+    }
+  }
+  return ideSync;
+}
+
+/** Parse one top-level field with its own schema, or take its default and say so. */
+function salvageField<K extends 'activeEnv' | 'logLevel' | 'disabledTools' | 'documentsMode'>(
+  key: K,
+  raw: Record<string, unknown>,
+  warnings: string[],
+): Config[K] {
+  const result = configSchema.shape[key].safeParse(raw[key]);
+  if (result.success) return result.data as Config[K];
+  const fallback = DEFAULT_CONFIG[key];
+  warnings.push(`${key}: ${describeValue(raw[key])} is not valid; using the default ${describeValue(fallback)}`);
+  return fallback;
+}
+
+/**
+ * Parse config.json text, tolerating invalid fields (FMDEV-879).
+ *
+ * A file that validates is returned as-is with no warnings. Otherwise each
+ * field is checked on its own and an invalid one falls back to its default
+ * with a warning, so one bad field (a legacy enum value, a hand-edit typo)
+ * no longer makes the whole config unloadable: that failure showed as "Not
+ * signed in" and a GRC tree stuck on "loading…". The repaired config lives in
+ * memory and reaches disk on the next `saveConfig`; a load never writes.
+ *
+ * Still throws when nothing can be salvaged safely: text that is not JSON, a
+ * JSON value that is not an object, or a `version` other than 1, since a
+ * different version means a different file format, not a bad field.
+ */
+function parseConfig(raw: string, path: string): ConfigLoadResult {
   const parsed: unknown = JSON.parse(raw);
   const result = configSchema.safeParse(parsed);
-  if (!result.success) {
+  if (result.success) return { config: result.data, warnings: [] };
+
+  if (!isRecord(parsed) || parsed.version !== 1) {
     const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
     throw new Error(`Invalid config file at ${path}: ${issues}`);
   }
-  return result.data;
+
+  const warnings: string[] = [];
+  const salvaged: Config = {
+    version: 1,
+    activeEnv: salvageField('activeEnv', parsed, warnings),
+    scopeLock: salvageScopeLock(parsed.scopeLock, warnings),
+    environments: salvageEnvironments(parsed.environments, warnings),
+    ideSync: salvageIdeSync(parsed.ideSync, warnings),
+    logLevel: salvageField('logLevel', parsed, warnings),
+    disabledTools: salvageField('disabledTools', parsed, warnings),
+    documentsMode: salvageField('documentsMode', parsed, warnings),
+  };
+  return { config: configSchema.parse(salvaged), warnings };
+}
+
+/** A loaded config plus one line per field that was invalid and fell back. Empty when the file was clean. */
+export interface ConfigLoadResult {
+  readonly config: Config;
+  readonly warnings: readonly string[];
+}
+
+export type ConfigWarningListener = (warnings: readonly string[]) => void;
+
+const warningListeners = new Set<ConfigWarningListener>();
+
+/**
+ * Hear about fallbacks from every tolerant load (`loadConfig`,
+ * `loadConfigWithWarnings`, `watchConfig`). This is how a fallback stays
+ * visible: the extension shows it to the user, the CLI logs it. A listener
+ * that throws is ignored so it can never break a load.
+ */
+export function onConfigWarnings(listener: ConfigWarningListener): { dispose(): void } {
+  warningListeners.add(listener);
+  return {
+    dispose(): void {
+      warningListeners.delete(listener);
+    },
+  };
+}
+
+function readConfigText(raw: string, path: string): ConfigLoadResult {
+  const result = parseConfig(raw, path);
+  if (result.warnings.length > 0) {
+    for (const listener of warningListeners) {
+      try {
+        listener(result.warnings);
+      } catch {
+        // A broken listener must not turn a salvaged load back into a failure.
+      }
+    }
+  }
+  return result;
 }
 
 /**
  * Load config.json, creating it with defaults if missing.
  *
- * Throws if the file exists but fails schema validation (message lists the
- * zod issues, matching auth/token-provider.ts's credentialsFileSchema style).
+ * Invalid fields fall back to their defaults (see `parseConfig`); the
+ * warnings go to `onConfigWarnings` listeners. Throws only when the file
+ * cannot be salvaged.
  */
 export async function loadConfig(): Promise<Config> {
+  return (await loadConfigWithWarnings()).config;
+}
+
+/** `loadConfig`, also returning the fallback warnings for callers that show them directly. */
+export async function loadConfigWithWarnings(): Promise<ConfigLoadResult> {
   const path = getConfigPath();
 
   let raw: string;
@@ -147,12 +336,12 @@ export async function loadConfig(): Promise<Config> {
   } catch (error) {
     if (isNodeErrnoException(error) && error.code === 'ENOENT') {
       await saveConfig(DEFAULT_CONFIG);
-      return DEFAULT_CONFIG;
+      return { config: DEFAULT_CONFIG, warnings: [] };
     }
     throw error;
   }
 
-  return parseConfig(raw, path);
+  return readConfigText(raw, path);
 }
 
 /**
@@ -186,10 +375,11 @@ export async function saveConfig(config: Config): Promise<void> {
  * filtered to the config.json basename and debounced (~150ms) so a burst of
  * rename events collapses into one reload.
  *
- * Transient parse/validation errors (e.g. a reader catching a half-written
- * file despite the atomic rename, or a hand-edited typo) are reported via
- * `log()` and do NOT crash the process or invoke `onChange` — only a
- * successfully validated `Config` reaches the caller.
+ * An invalid field falls back to its default as in `loadConfig`, and each
+ * fallback is reported via `log()`. Errors that cannot be salvaged (e.g. a
+ * reader catching a half-written file despite the atomic rename) are
+ * reported via `log()` and do NOT crash the process or invoke `onChange` —
+ * only a validated `Config` reaches the caller.
  */
 export function watchConfig(onChange: (config: Config) => void, log: (msg: string) => void): { close(): void } {
   const path = getConfigPath();
@@ -209,7 +399,9 @@ export function watchConfig(onChange: (config: Config) => void, log: (msg: strin
 
     let config: Config;
     try {
-      config = parseConfig(raw, path);
+      const result = readConfigText(raw, path);
+      for (const warning of result.warnings) log(`config.json watch: ${warning}`);
+      config = result.config;
     } catch (error) {
       log(`config.json watch: transient parse/validation error, skipping reload: ${errorMessage(error)}`);
       return;
@@ -371,7 +563,11 @@ function deriveScopeLockNames(scopeLock: Config['scopeLock'], log: (msg: string)
  */
 export async function addCustomServer(input: CustomServerInput): Promise<string> {
   const config = await loadConfig();
-  const { key, entry } = normalizeCustomServer(input, Object.keys(config.environments));
+  const { key, entry } = normalizeCustomServer(
+    input,
+    Object.keys(config.environments),
+    unavailableEnvironments(config.environments, isSelectableEnv),
+  );
   await saveConfig({ ...config, environments: { ...config.environments, [key]: entry } });
   return key;
 }

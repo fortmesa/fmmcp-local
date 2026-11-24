@@ -111,6 +111,11 @@ at which point the full tool list arrives on its own, with nothing to restart.
 Every `fortmesa.*` VS Code setting has a matching `config.json` key. Edit either
 one, or use the Saferoom UI — they are the same setting.
 
+A setting Saferoom cannot read in `config.json` (a typo, or a value an older
+version wrote) falls back to its default and Saferoom tells you which one; the
+rest of your settings still load. An unreadable scope lock falls back to your
+listed scopes only, never to every scope.
+
 | Setting                                                                  | What it does                                                                                                                    | Values                              | Default                 |
 | :----------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------ | :---------------------------------- | :---------------------- |
 | `fortmesa.activeEnv`                                                     | The active FortMesa environment; switching re-targets the MCP server for every synced IDE                                       | environment name                    | `prod`                  |

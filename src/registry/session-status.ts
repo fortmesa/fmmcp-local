@@ -42,7 +42,24 @@ export interface ExpiredSessionNotice {
   readonly detail: string;
   /** The status-bar hover hint (the status bar itself only gains a warning glyph). */
   readonly statusBarTooltip: string;
+  /**
+   * The ways out besides `action` (FMDEV-879). An expired session used to
+   * offer only its recovery: a token-only environment with no new token to
+   * paste was a dead end, because the expired state hid Sign out and nothing
+   * offered another environment.
+   */
+  readonly alternatives: readonly ExpiredSessionAlternative[];
 }
+
+export interface ExpiredSessionAlternative {
+  readonly action: 'switch-environment' | 'sign-out';
+  readonly label: string;
+}
+
+const EXPIRED_ALTERNATIVES: readonly ExpiredSessionAlternative[] = [
+  { action: 'switch-environment', label: 'Switch environment' },
+  { action: 'sign-out', label: 'Sign out' },
+];
 
 /**
  * True only for a credential we can PROVE is dead.
@@ -72,7 +89,8 @@ export function expiredSessionNotice(env: string): ExpiredSessionNotice {
       actionLabel: 'Sign in again',
       action: 'sign-in',
       detail: `Your ${label} credential has expired. Signing in again issues a fresh session.`,
-      statusBarTooltip: `FortMesa Saferoom — ${label} session expired; sign in again from the Signed-in user view`,
+      statusBarTooltip: `FortMesa Saferoom — ${label} session expired; sign in again or switch environment from the Signed-in user view`,
+      alternatives: EXPIRED_ALTERNATIVES,
     };
   }
 
@@ -84,6 +102,7 @@ export function expiredSessionNotice(env: string): ExpiredSessionNotice {
     detail:
       `${label} is token-only — it has no sign-in flow, so an expired access token has to be replaced. ` +
       'Settings › Advanced holds the access-token control.',
-    statusBarTooltip: `FortMesa Saferoom — ${label} access token expired; replace it in Settings › Advanced`,
+    statusBarTooltip: `FortMesa Saferoom — ${label} access token expired; replace it in Settings › Advanced or switch environment`,
+    alternatives: EXPIRED_ALTERNATIVES,
   };
 }

@@ -1,3 +1,50 @@
+## [2026-11-25] Release: FMDEV-879-config-legacy-tolerant
+
+- User: Matthew Fisch + Claude Code (FMDEV-879)
+- Version: 0.9.4 (CI stamps 0.9.<build>)
+- Commit: (this commit)
+
+### What's New
+
+- **An older or mistyped setting no longer locks you out.** If `config.json` holds a value Saferoom cannot
+  read, that one setting falls back to its default and Saferoom tells you which one; you stay signed in and the
+  GRC tree loads. A scope lock written by an older version as "locked" is read as your listed scopes.
+- **An expired session always has a way out.** Next to the recovery step, the Signed-in user view now offers
+  **Sign out** and **Switch environment**, and both are in the command palette. A token-only environment with an
+  expired token is no longer a dead end.
+- **Saferoom says when an environment is not in your build.** If your settings name an environment this build
+  does not include, Settings › Data region says so and points you to the build that has it, instead of refusing
+  the name as a duplicate.
+
+### Developer Notes
+
+- **Tolerant load** (`src/registry/config.ts`): a file that validates is returned untouched. Otherwise each field
+  is validated alone; an invalid one takes its default and adds a warning (`loadConfigWithWarnings`,
+  `onConfigWarnings`). The extension logs each warning and shows each distinct set once per session, with an
+  "Open config.json" button. The CLI logs them to stderr, and `watchConfig` logs them too. A load never writes;
+  the repaired value reaches disk on the next `saveConfig`. Still fatal: text that is not JSON, a value that is not
+  an object, and `version` other than 1.
+- **Scope lock fails closed**: an unreadable mode becomes `single` (1 scope) or `multi` (0 or more scopes), and an
+  unreadable scope list becomes `[]` (every scope refused). The result is `unlocked` only when the file says
+  `unlocked`. Legacy `locked` is the only former value: the schema enum has been `single|multi|unlocked` since
+  ce3e385, and `locked` was UI wording until ee6f0f7. `logLevel` and `documentsMode` have never changed their
+  values.
+- **Changed contract**: an unknown `documentsMode` used to make the file invalid
+  (`test/registry/documents-mode.test.mjs`). It now falls back to `local` with a visible warning, per the PO's
+  FMDEV-879 rule that one invalid field must not take down the whole config.
+- **Prod-only guard kept**: `unavailableEnvironments()` lists configured entries this build will not select;
+  Settings shows them and `normalizeCustomServer` explains them. New `fortmesa.signOut` and
+  `fortmesa.switchEnvironment` commands (`src/extension/session-commands.ts`). Switch environment opens Settings
+  at Data region (`openSaferoomSettings` now takes `{ section }`), so no QuickPick is used, per the PO's
+  no-palette-prompt rule. `expiredSessionNotice()` carries `alternatives`.
+- **Built-in-name merge**: already true on master, because clientId, api and app come from the compiled
+  `ENVIRONMENTS` and a config entry overrides only the gateway. It is now pinned by a spec. The PO's "next is
+  token-only" was a prod-only build, which has no built-in next; the dev VSIX has it.
+- **Gate**: `yarn test` (format, lint, clean rebuild, all suites, notices): 767 tests, 766 pass, 0 fail,
+  1 skipped. Seen red first: the new config specs failed on master with the PO's exact error
+  (`scopeLock.mode: Invalid option: expected one of "single"|"multi"|"unlocked"`). The (a′)/(b)/(c) specs failed
+  7 of 19 before the fix.
+
 ## [2026-11-15] Release: FMDEV-602-validate-no-git
 
 - User: Matthew Fisch + Claude Code (FMDEV-602)
